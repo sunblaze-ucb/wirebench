@@ -16,7 +16,7 @@ The pre-built image includes jadx, apktool, radare2, Node.js, and all Python
 dependencies. This is the environment where agents will expect to run.
 
 ```bash
-docker build -t wirewatch/apk-analysis:latest -f llm-scripts/Dockerfile llm-scripts/
+docker build -t wirewatch/apk-analysis:latest -f Dockerfile .
 ```
 
 ### Install Python dependencies
