@@ -1,0 +1,154 @@
+"""
+APK analysis workspace utilities.
+
+Handles APK/trace discovery, JSONL filtering, and Docker container setup
+for running LLM agents on Android APK analysis tasks.
+"""
+
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+from utils import copy_to_container, exec_run
+
+
+def discover_apk(apk_dir, apk_name):
+    """Find APK file by package name convention.
+
+    Looks for files matching {apk_name}*.apk in apk_dir.
+
+    Args:
+        apk_dir: Directory containing APK files
+        apk_name: Package name (e.g., com.tencent.mm)
+
+    Returns:
+        Path to the APK file
+
+    Raises:
+        FileNotFoundError: If no matching APK found
+    """
+    apk_dir = Path(apk_dir)
+    matches = sorted(apk_dir.glob(f"{apk_name}*.apk"))
+    if not matches:
+        raise FileNotFoundError(f"No APK found matching '{apk_name}*.apk' in {apk_dir}")
+    if len(matches) > 1:
+        print(f"  Warning: Multiple APKs found for {apk_name}, using {matches[0].name}")
+    return matches[0]
+
+
+def discover_traces(traces_dir, apk_name):
+    """Find PCAP trace files for an APK.
+
+    Looks for files matching {apk_name}_*.pcap* in traces_dir.
+
+    Args:
+        traces_dir: Directory containing PCAP files
+        apk_name: Package name (e.g., com.tencent.mm)
+
+    Returns:
+        List of Paths to matching PCAP files (may be empty)
+    """
+    traces_dir = Path(traces_dir)
+    matches = sorted(traces_dir.glob(f"{apk_name}_*.pcap*"))
+    return matches
+
+
+def filter_analysis_jsonl(jsonl_path, apk_name):
+    """Extract JSONL entries matching the given APK name.
+
+    Each line in the JSONL file is a JSON object with the package name
+    as the top-level key. We extract lines where the key matches apk_name.
+
+    Args:
+        jsonl_path: Path to the analysis JSONL file
+        apk_name: Package name to filter for
+
+    Returns:
+        String containing filtered JSONL lines (may be empty)
+    """
+    jsonl_path = Path(jsonl_path)
+    if not jsonl_path.exists():
+        return ""
+
+    matching_lines = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if apk_name in obj:
+                    matching_lines.append(line)
+            except json.JSONDecodeError:
+                continue
+
+    return "\n".join(matching_lines)
+
+
+def setup_apk_workspace(container_id, apk_path, traces, analysis_content, metadata):
+    """Set up APK analysis workspace inside a Docker container.
+
+    Creates the directory layout and copies all input files:
+        /apk/           — APK file
+        /traces/        — PCAP trace files
+        /analysis/      — Filtered JSONL analysis
+        /metadata/      — Metadata JSON
+        /output/        — Agent output directory
+
+    Args:
+        container_id: Docker container ID
+        apk_path: Local path to the APK file (or None)
+        traces: List of local paths to PCAP files
+        analysis_content: String of filtered JSONL content
+        metadata: Dict of metadata to serialize as JSON
+    """
+    # Validate required inputs
+    if not apk_path or not Path(apk_path).exists():
+        raise FileNotFoundError(f"APK not found: {apk_path}")
+    if not traces:
+        raise FileNotFoundError("No trace files provided")
+    if not analysis_content:
+        raise ValueError("No analysis JSONL content for this APK")
+
+    # Create directories
+    exec_run(
+        container_id,
+        "mkdir -p /apk /traces /analysis /metadata /output",
+        workdir="/",
+        verbose=False,
+        check=True,
+    )
+
+    # Copy APK
+    copy_to_container(container_id, apk_path, f"/apk/{Path(apk_path).name}")
+    print(f"  Copied APK: {Path(apk_path).name}")
+
+    # Copy traces
+    for trace in traces:
+        copy_to_container(container_id, trace, f"/traces/{trace.name}")
+    print(f"  Copied {len(traces)} trace file(s)")
+
+    # Write filtered analysis JSONL
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp:
+        tmp.write(analysis_content)
+        tmp.flush()
+        copy_to_container(container_id, tmp.name, "/analysis/analysis.jsonl")
+    print("  Copied analysis JSONL")
+
+    # Write metadata
+    if metadata:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            json.dump(metadata, tmp, indent=2)
+            tmp.flush()
+            copy_to_container(container_id, tmp.name, "/metadata/metadata.json")
+        print("  Copied metadata")
+
+    # Make all workspace files readable by the agent user
+    exec_run(
+        container_id,
+        "chmod -R a+rX /apk /traces /analysis /metadata /output",
+        verbose=False,
+        check=False,
+    )
