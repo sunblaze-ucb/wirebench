@@ -463,7 +463,7 @@ def get_llm_env(
         return env, llm_model
 
 
-def litellm_generate_api_key(max_budget: float, key_alias: str) -> str:
+def litellm_generate_api_key(max_budget: float, key_alias: str, duration: str = "6h") -> str:
     LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL")
     LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
     LITELLM_USER_ID = os.getenv("LITELLM_USER_ID")
@@ -472,7 +472,7 @@ def litellm_generate_api_key(max_budget: float, key_alias: str) -> str:
         response = client.post(
             "/key/generate",
             json={"max_budget": max_budget, "key_alias": key_alias, "user_id": LITELLM_USER_ID,
-            "team_id": LITELLM_TEAM_ID},
+            "team_id": LITELLM_TEAM_ID, "duration": duration},
             headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"},
         )
         response.raise_for_status()
