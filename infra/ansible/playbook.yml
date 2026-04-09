@@ -1,0 +1,106 @@
+---
+# Play 1: Install packages, configure groups, reboot
+- name: Install Cuttlefish and configure system
+  hosts: cuttlefish
+  become: true
+  vars:
+    cf_user: "{{ ansible_user }}"
+
+  tasks:
+    - name: Download registry signing key
+      ansible.builtin.get_url:
+        url: https://us-apt.pkg.dev/doc/repo-signing-key.gpg
+        dest: /etc/apt/trusted.gpg.d/artifact-registry.asc
+        mode: "0644"
+
+    - name: Add Cuttlefish repository
+      ansible.builtin.copy:
+        content: "deb https://us-apt.pkg.dev/projects/android-cuttlefish-artifacts android-cuttlefish main\n"
+        dest: /etc/apt/sources.list.d/artifact-registry.list
+        mode: "0644"
+
+    - name: Install Cuttlefish packages
+      ansible.builtin.apt:
+        name:
+          - cuttlefish-base
+          - cuttlefish-user
+          - cuttlefish-orchestration
+          - unzip
+        state: present
+        update_cache: true
+
+    - name: add user to kvm, cvdnetwork, render groups
+      ansible.builtin.user:
+        name: "{{ cf_user }}"
+        groups: kvm,cvdnetwork,render
+        append: true
+      register: groups_changed
+
+    - name: Reboot if groups changed
+      ansible.builtin.shell: sleep 2 && reboot
+      async: 1
+      poll: 0
+      when: groups_changed.changed
+
+    - name: wait for host to come back
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 900
+      when: groups_changed.changed
+
+# Play 2: Upload artifacts and launch (fresh SSH connection)
+- name: Deploy and launch Cuttlefish
+  hosts: cuttlefish
+  become: true
+  vars:
+    cf_user: "{{ ansible_user }}"
+    cf_dir: "/home/{{ cf_user }}/cf"
+    arch: "{{ lookup('env', 'CF_ARCH') | default('x86', true) }}"
+    cuttlefish_image_zip: "{{ lookup('env', 'CUTTLEFISH_IMAGE_ZIP') }}"
+    artifacts_dir: "{{ playbook_dir }}/../{{ arch }}"
+
+  tasks:
+    - name: Create cf directory
+      ansible.builtin.file:
+        path: "{{ cf_dir }}"
+        state: directory
+        owner: "{{ cf_user }}"
+        group: "{{ cf_user }}"
+        mode: "0755"
+
+    - name: Upload cvd-host_package.tar.gz
+      ansible.builtin.copy:
+        src: "{{ artifacts_dir }}/cvd-host_package.tar.gz"
+        dest: "/home/{{ cf_user }}/cvd-host_package.tar.gz"
+        owner: "{{ cf_user }}"
+        group: "{{ cf_user }}"
+        mode: "0644"
+
+    - name: Upload Cuttlefish image zip
+      ansible.builtin.copy:
+        src: "{{ artifacts_dir }}/{{ cuttlefish_image_zip }}"
+        dest: "/home/{{ cf_user }}/{{ cuttlefish_image_zip }}"
+        owner: "{{ cf_user }}"
+        group: "{{ cf_user }}"
+        mode: "0644"
+
+    - name: Extract cvd-host_package.tar.gz
+      ansible.builtin.unarchive:
+        src: "/home/{{ cf_user }}/cvd-host_package.tar.gz"
+        dest: "{{ cf_dir }}"
+        remote_src: true
+      become: false
+
+    - name: Extract Cuttlefish image zip
+      ansible.builtin.command:
+        cmd: "unzip -o /home/{{ cf_user }}/{{ cuttlefish_image_zip }} -d {{ cf_dir }}"
+      become: false
+      changed_when: true
+
+    - name: Launch Cuttlefish
+      ansible.builtin.shell:
+        # Echo n is for interactive prompt (accept/reject anonymous usage statistics reporting)
+        cmd: "echo n | HOME={{ cf_dir }} {{ cf_dir }}/bin/launch_cvd --daemon"
+        chdir: "{{ cf_dir }}"
+      become: false
+      changed_when: true

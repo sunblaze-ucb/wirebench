@@ -1,0 +1,8 @@
+# ansible inventory
+ansible/inventory.ini
+
+# binaries in arch folders
+x86/*.tar.gz
+x86/*.zip
+arm/*.tar.gz
+arm/*.zip
