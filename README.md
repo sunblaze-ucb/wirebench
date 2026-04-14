@@ -6,47 +6,76 @@ Automated proprietary protocol discovery and cryptographic analysis of Android a
 
 ### Prerequisites
 
-- Docker
-- Python 3.10+ with `venv`
-- LLM access: LiteLLM proxy
+- An ARM64 Linux host with `/dev/kvm` accessible
+- Docker + `docker compose` v2
+- Membership in the `kvm` group: `sudo usermod -aG kvm $USER && newgrp kvm`
+- Python 3.10+
+- LiteLLM proxy access (see Environment variables below)
 
-### Build the Docker image
-
-The pre-built image includes jadx, apktool, radare2, Node.js, and all Python
-dependencies. This is the environment where agents will expect to run.
-
-```bash
-docker build -t wirewatch/apk-analysis:latest -f Dockerfile .
-```
-
-### Install Python dependencies
+### Quickstart
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install httpx tomli boto3
+# First time: verify AOSP image artifacts are in infra/arm/
+./bench fetch
+
+# Boot the cuttlefish stack
+./bench up
+
+# Run the pipeline on a single APK
+./bench run com.example.app
+
+# Run a batch
+./bench batch tasks_stage1_all.txt
+
+# Tear down
+./bench down
 ```
 
-### Data layout
+### Optional: x86 APK support (requires a second x86_64 host)
 
+```bash
+# Add the x86 host to bench.env
+echo 'X86_SSH=user@x86-host' >> bench.env
+
+# Bootstrap the x86 host (installs docker, syncs repo, builds images)
+./bench setup-x86
+
+# Now bench up/run/batch automatically dispatch x86 APKs to that host
+./bench up    # boots both hosts
+./bench batch tasks_stage1_all.txt   # arm64 local, x86 remote
 ```
-wirellm-bench/
-├── run_apk_analysis.py     # Main entry point
-├── run_agent.py            # Agent backends
-├── utils.py                # Docker/LLM helpers
-├── apk_utils.py            # APK discovery and workspace setup
-├── Identify_Protocols.md   # Stage 1 prompt
-├── Analyze_Protocol.md     # Stage 2 prompt
-├── Dockerfile
-├── batch_apk_analysis.sh   # Batch runner (full pipeline)
-├── batch_identify.sh       # Batch runner (stage 1 only)
-├── tasks_*.txt             # APK task lists
-├── apk_output/             # Output from previous runs
-└── input_data/             # Input from previous pipeline (WireWatch)
-  ├── apks/                 # APK files (com.example.app.apk)
-  ├── traces/               # PCAP network captures (com.example.app_*.pcap)
-  └── analysis.jsonl        # Pre-computed encryption analysis
+
+### Bench commands
+
+| Command | Effect |
+|---|---|
+| `./bench fetch` | Verify AOSP image artifacts in `infra/arm/` |
+| `./bench up [--dev] [--debug]` | Boot the cuttlefish stack |
+| `./bench run <apk> [args...]` | Run the pipeline on one APK |
+| `./bench batch <tasks-file> [args...]` | Run the pipeline on a task list |
+| `./bench reset [--soft\|--hard] [--device N]` | Reset device state |
+| `./bench down [--purge]` | Tear down (`--purge` deletes AOSP zips) |
+| `./bench shell` | Drop into an agent container shell |
+| `./bench logs [service]` | Tail compose logs |
+| `./bench setup-x86` | Bootstrap the optional x86 remote host |
+
+### Debug mode
+
+```bash
+./bench up --debug
 ```
+
+Publishes cuttlefish ADB and Frida ports to `127.0.0.1` so host tools
+(`scrcpy`, `adb`, `frida-tools`) can attach. Removed by `./bench down`.
+
+### Dev mode
+
+```bash
+./bench up --dev
+```
+
+Bind-mounts the working tree into the agent container so edits to Python
+code and prompts take effect without rebuilding the image.
 
 ### Environment variables
 
@@ -56,8 +85,18 @@ wirellm-bench/
 | `LITELLM_MASTER_KEY` | For LiteLLM | Admin key for per-stage key generation |
 | `LITELLM_USER_ID` | For LiteLLM | User ID for key scoping |
 | `LITELLM_TEAM_ID` | For LiteLLM | Team ID for key scoping |
+| `DEVICE_COUNT` | No | Number of cuttlefish devices (default 1) |
+| `X86_SSH` | No | SSH target for x86 APK dispatch |
 
-Please ensure these environment variables are set when running any of the scripts in this directory.
+Set these in `bench.env` (sourced automatically) or export them.
+
+### Troubleshooting
+
+```bash
+./bench logs cuttlefish           # see cuttlefish boot logs
+./bench reset --hard              # reboot wedged devices
+./bench down --purge && ./bench up   # full reset
+```
 
 ## Pipeline
 
@@ -68,57 +107,6 @@ The agent analyzes the APK, network traces, and pre-computed analysis to identif
 
 **Stage 2 — Protocol Analysis** (`Analyze_Protocol.md`):
 For each high-priority protocol from stage 1, the agent conducts a deep cryptographic audit — reconstructing transformation pipelines, recovering key/IV handling, and implementing decryption. Outputs per-protocol results JSON, findings report, and `break.py` script.
-
-## Running the Agent
-
-### Single APK (full pipeline)
-
-```bash
-# Two-stage pipeline (default)
-python run_apk_analysis.py com.example.app \
-    --traces-dir ./traces/ --apk-dir ./apks/ \
-    --analysis-jsonl ./analysis.jsonl
-
-# Stage 1 only (limit to 0 protocols in stage 2)
-python run_apk_analysis.py com.example.app \
-    --max-protocols 0
-
-# Limit to 3 protocols in stage 2
-python run_apk_analysis.py com.example.app \
-    --max-protocols 3
-
-# Resume from a previous run (skip stage 1)
-python run_apk_analysis.py com.example.app \
-    --resume-from apk_output/com.example.app/20260401_120000
-```
-
-### Batch run
-
-Edit the task list or use one of the provided files:
-
-```bash
-# Full pipeline on many APKs
-MAX_PARALLEL=4 MODEL_PROVIDER=litellm LITELLM_STAGE_BUDGET=5 \
-    ./batch_apk_analysis.sh tasks_stage1_all.txt
-
-# Stage 1 only (protocol identification)
-MAX_PARALLEL=4 ./batch_identify.sh tasks_stage1_all.txt
-
-# Dry run (print commands without executing)
-DRY_RUN=1 ./batch_identify.sh tasks_stage1_all.txt
-```
-
-**Batch environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_PARALLEL` | `4` | Number of concurrent jobs |
-| `AGENT` | `claude-code` | Agent backend |
-| `MAX_ATTEMPTS` | `1` | Retry attempts per stage |
-| `TIMEOUT` | `5400` | Agent timeout in seconds |
-| `MODEL_PROVIDER` | `litellm` / `bedrock` | LLM provider |
-| `LITELLM_STAGE_BUDGET` | `5` | Per-stage budget in USD |
-| `DOCKER_IMAGE` | `wirewatch/apk-analysis:latest` | Docker image |
 
 ## Output Structure
 

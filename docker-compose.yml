@@ -1,0 +1,40 @@
+services:
+  cuttlefish:
+    build:
+      context: ./infra/cuttlefish
+      args:
+        CF_ARCH: ${CF_ARCH:-arm64}
+    image: wirewatch/cuttlefish:${CF_ARCH:-arm64}
+    privileged: true
+    devices:
+      - /dev/kvm
+    volumes:
+      - ./infra/${CF_IMAGE_DIR:-arm}:/cf/images:ro
+    environment:
+      DEVICE_COUNT: ${DEVICE_COUNT:-1}
+      CF_ARCH: ${CF_ARCH:-arm64}
+    networks: [wirewatch]
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "test", "-f", "/cf/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
+
+  agent:
+    build:
+      context: .
+      dockerfile: infra/agent/Dockerfile
+    image: wirewatch/agent:latest
+    environment:
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      LITELLM_USER_ID: ${LITELLM_USER_ID:-}
+      LITELLM_TEAM_ID: ${LITELLM_TEAM_ID:-}
+    volumes:
+      - ./input_data:/input_data:ro
+      - ./apk_output:/output
+    networks: [wirewatch]
+
+networks:
+  wirewatch:

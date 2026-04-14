@@ -45,6 +45,7 @@ from utils import (
     litellm_get_api_key_usage,
 )
 from apk_utils import (
+    detect_apk_arch,
     discover_apk,
     discover_traces,
     filter_analysis_jsonl,
@@ -66,6 +67,32 @@ DEFAULT_TIMEOUT = 5400
 DEFAULT_IMAGE = "wirewatch/apk-analysis:latest"
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
+
+
+# =============================================================================
+# Device env helpers
+# =============================================================================
+
+def build_device_env(arch: str, device_index: int, adb_host: str) -> dict:
+    """Build the per-run device env contract for the agent container.
+
+    Args:
+        arch: "arm64" or "x86_64"
+        device_index: numeric index within the arch's device pool
+        adb_host: hostname of the cuttlefish service ("cuttlefish-arm64" or "cuttlefish-x86")
+
+    Returns:
+        dict of env vars to pass into the agent container.
+    """
+    return {
+        "ANDROID_ADB_SERVER_ADDRESS": adb_host,
+        "ANDROID_ADB_SERVER_PORT": "5037",
+        "ADB_DEVICE_SERIAL": f"0.0.0.0:{6520 + device_index}",
+        "FRIDA_HOST": adb_host,
+        "FRIDA_PORT": str(27042 + device_index),
+        "DEVICE_INDEX": str(device_index),
+        "ARCH": arch,
+    }
 
 
 # =============================================================================
@@ -599,6 +626,23 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     # Resolve container paths
     apk_filename = Path(apk_path).name if apk_path else "N/A"
     container_apk_path = f"/apk/{apk_filename}" if apk_path else "/apk/"
+
+    # Per-run device assignment.
+    # Cross-architecture cuttlefish on a single host is impossible (KVM has
+    # no cross-arch acceleration). The benchmark runs a single arm64 cuttlefish
+    # and relies on Android's libndk_translation to run x86 native libraries
+    # at runtime. Detect the APK's arch for diagnostics, but always route to
+    # cuttlefish-arm64.
+    if apk_path is not None:
+        detected_arch = detect_apk_arch(str(apk_path))
+    else:
+        detected_arch = "universal"
+    if detected_arch == "x86_64":
+        print(f"  Note: APK is x86_64-only — relying on libndk_translation to run x86 native libs on the arm64 device")
+    arch = "arm64"
+    device_index = 0
+    adb_host = "cuttlefish"
+    args.device_env = build_device_env(arch, device_index, adb_host)
 
     pipeline_result = {
         "stage1": None,

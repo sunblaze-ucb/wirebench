@@ -1,0 +1,11 @@
+.git
+.venv
+apk_output/
+infra/arm/*.zip
+infra/arm/*.tar.gz
+infra/x86/*.zip
+infra/x86/*.tar.gz
+docker-compose.override.yml
+docs/
+__pycache__/
+*.pyc

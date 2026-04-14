@@ -8,7 +8,9 @@ for running LLM agents on Android APK analysis tasks.
 import json
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
+from typing import Literal
 
 from utils import copy_to_container, exec_run
 
@@ -152,3 +154,41 @@ def setup_apk_workspace(container_id, apk_path, traces, analysis_content, metada
         verbose=False,
         check=False,
     )
+
+
+def detect_apk_arch(apk_path: str) -> Literal["arm64", "x86_64", "universal"]:
+    """Detect the native architecture an APK requires.
+
+    Reads the APK as a zip and looks at lib/<abi>/ entries.
+
+    Returns:
+        "arm64"     — only arm64-v8a native libs (or arm64-v8a + arm/armv7)
+        "x86_64"    — only x86_64 native libs (or x86_64 + x86)
+        "universal" — both arm64 and x86 present, or no native libs at all.
+                      Universal APKs are routed to arm64 (host-native).
+    """
+    has_arm = False
+    has_x86 = False
+    try:
+        with zipfile.ZipFile(apk_path, "r") as zf:
+            for name in zf.namelist():
+                if not name.startswith("lib/"):
+                    continue
+                parts = name.split("/", 2)
+                if len(parts) < 3:
+                    continue
+                abi = parts[1]
+                if abi in ("arm64-v8a", "armeabi-v7a", "armeabi"):
+                    has_arm = True
+                elif abi in ("x86_64", "x86"):
+                    has_x86 = True
+    except (zipfile.BadZipFile, FileNotFoundError):
+        return "universal"
+
+    if has_arm and has_x86:
+        return "universal"
+    if has_arm:
+        return "arm64"
+    if has_x86:
+        return "x86_64"
+    return "universal"

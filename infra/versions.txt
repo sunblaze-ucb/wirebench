@@ -1,0 +1,7 @@
+# Pinned AOSP cuttlefish image versions.
+# Bump build numbers + sha256s in lockstep when upgrading.
+
+[arm64]
+build=15067704
+image_sha256=3c9380553693c1df26946836c0508e1758c01892e04ea5a1afb4fda7f2058f9d
+cvd_host_sha256=7e5cbece049cb7195ba572ea047f82aa35b0abb8c7b0f792cc9de7738eaf0267

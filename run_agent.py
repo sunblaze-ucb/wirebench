@@ -603,6 +603,10 @@ chown -R agent:agent /src /output /out /work 2>/dev/null || true
 def get_claude_code_env(args):
     """Build environment variables dict for Claude Code based on model provider.
 
+    Includes the per-run device env contract (ANDROID_ADB_SERVER_ADDRESS,
+    FRIDA_HOST, etc.) when the caller has set it on `args`. The bench CLI
+    populates these via `args.device_env` before invoking the agent.
+
     Returns:
         dict of environment variables to pass into the container.
     """
@@ -617,6 +621,20 @@ def get_claude_code_env(args):
         env["ANTHROPIC_BASE_URL"] = os.getenv("LITELLM_BASE_URL", os.getenv("OPENAI_BASE_URL", ""))
         env["ANTHROPIC_API_KEY"] = os.getenv("OPENAI_API_KEY", os.getenv("ANTHROPIC_API_KEY", ""))
         env["ANTHROPIC_MODEL"] = args.litellm_model_id
+
+    # Per-run device env contract — set by run_apk_analysis.py before each run
+    device_env = getattr(args, "device_env", None) or {}
+    for key in (
+        "ANDROID_ADB_SERVER_ADDRESS",
+        "ANDROID_ADB_SERVER_PORT",
+        "ADB_DEVICE_SERIAL",
+        "FRIDA_HOST",
+        "FRIDA_PORT",
+        "DEVICE_INDEX",
+        "ARCH",
+    ):
+        if key in device_env and device_env[key] is not None:
+            env[key] = str(device_env[key])
     return env
 
 

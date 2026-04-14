@@ -1,0 +1,5 @@
+services:
+  agent:
+    volumes:
+      - ./:/repo:ro
+    working_dir: /repo

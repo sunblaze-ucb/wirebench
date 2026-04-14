@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# bench — wirewatch benchmark runner
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_ROOT"
+
+# Source bench.env if it exists
+[ -f bench.env ] && set -a && source bench.env && set +a
+
+usage() {
+  cat <<EOF
+Usage: ./bench <command> [options]
+
+Commands:
+  fetch      Download pinned AOSP image artifacts
+  up         Boot the cuttlefish stack
+  run        Run the pipeline on a single APK
+  batch      Run the pipeline on a task list
+  reset      Soft- or hard-reset device state
+  down       Tear down the stack
+  shell      Drop into an agent container shell
+  logs       Tail compose logs for a service
+  setup-x86  Bootstrap the optional x86 remote host
+
+Run './bench <command> --help' for command-specific help.
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  fetch)     source "$REPO_ROOT/infra/bench/fetch.sh";     bench_fetch "$@" ;;
+  up)        source "$REPO_ROOT/infra/bench/up.sh";        bench_up "$@" ;;
+  run)       source "$REPO_ROOT/infra/bench/run.sh";       bench_run "$@" ;;
+  batch)     source "$REPO_ROOT/infra/bench/batch.sh";     bench_batch "$@" ;;
+  reset)     source "$REPO_ROOT/infra/bench/reset.sh";     bench_reset "$@" ;;
+  down)      source "$REPO_ROOT/infra/bench/down.sh";      bench_down "$@" ;;
+  shell)     source "$REPO_ROOT/infra/bench/shell.sh";     bench_shell "$@" ;;
+  logs)      source "$REPO_ROOT/infra/bench/logs.sh";      bench_logs "$@" ;;
+  setup-x86) source "$REPO_ROOT/infra/bench/setup-x86.sh"; bench_setup_x86 "$@" ;;
+  -h|--help|help|"") usage; exit 0 ;;
+  *) echo "unknown command: $cmd" >&2; usage; exit 1 ;;
+esac
