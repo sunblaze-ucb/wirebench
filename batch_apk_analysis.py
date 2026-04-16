@@ -23,10 +23,23 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 import zipfile
 from collections import deque
 from pathlib import Path
 from typing import Literal
+
+
+def _open_batch_log(pkg: str) -> tuple[Path, "object"]:
+    """Open apk_output/<pkg>/batch_runner_<timestamp>.log for streaming.
+
+    Returns (path, file_handle). Caller closes the handle.
+    """
+    log_dir = Path("apk_output") / pkg
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"batch_runner_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    # line-buffered so tail -f shows progress live
+    return log_path, open(log_path, "w", buffering=1)
 
 
 def detect_apk_arch(apk_path: str) -> Literal["arm64", "x86_64", "universal"]:
@@ -137,22 +150,33 @@ async def run_local(pkg: str, args, sem: asyncio.Semaphore,
             if args.dry_run:
                 print(f"  DRY [{device_idx}] {' '.join(cmd)}")
                 return pkg, 0
-            print(f"  -> {pkg} on arm64 device {device_idx}")
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            log_path, log_f = _open_batch_log(pkg)
+            print(f"  -> {pkg} on arm64 device {device_idx} (log: {log_path})")
             try:
-                stdout, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=args.timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                print(f"  x {pkg} TIMEOUT after {args.timeout}s")
-                return pkg, 124
-            rc = proc.returncode
-            print(f"  {'ok' if rc == 0 else 'x'} {pkg} exit={rc}")
+                log_f.write(f"# cmd: {' '.join(cmd)}\n")
+                log_f.write(f"# device_index: {device_idx}\n")
+                log_f.write(f"# started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, env=env,
+                    stdout=log_f,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=args.timeout)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    log_f.write(f"\n# TIMEOUT after {args.timeout}s\n")
+                    print(f"  x {pkg} TIMEOUT after {args.timeout}s (see {log_path})")
+                    return pkg, 124
+                rc = proc.returncode
+                log_f.write(f"\n# exit={rc}\n")
+            finally:
+                log_f.close()
+            if rc == 0:
+                print(f"  ok {pkg} exit={rc}")
+            else:
+                print(f"  x {pkg} exit={rc} (see {log_path})")
             return pkg, rc
     finally:
         async with pool_cv:

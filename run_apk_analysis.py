@@ -64,7 +64,7 @@ from run_agent import (
 # Default timeout in seconds (90 minutes)
 DEFAULT_TIMEOUT = 5400
 
-DEFAULT_IMAGE = "wirewatch/apk-analysis:latest"
+DEFAULT_IMAGE = "wirewatch/agent:latest"
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
 
@@ -382,15 +382,20 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
     container_id = None
     stage_api_key = None
 
-    # Generate a per-stage LiteLLM API key with its own budget
+    # Generate a per-stage LiteLLM API key with its own budget.
+    # Stage 2 keys get a larger budget since protocol analysis is deeper
+    # and longer than identification.
     if args.model_provider == "litellm":
         key_label = stage_label or "stage"
+        budget = (args.litellm_stage2_budget
+                  if key_label.startswith("stage2")
+                  else args.litellm_stage_budget)
         stage_api_key = litellm_generate_api_key(
-            max_budget=args.litellm_stage_budget,
+            max_budget=budget,
             key_alias=f"apk-{args.apk_name}-{key_label}-{uuid.uuid4().hex[:8]}",
         )
         os.environ["OPENAI_API_KEY"] = stage_api_key
-        print(f"  LiteLLM key for {key_label}: budget=${args.litellm_stage_budget}")
+        print(f"  LiteLLM key for {key_label}: budget=${budget}")
 
     try:
         for attempt in range(1, args.max_attempts + 1):
@@ -583,7 +588,7 @@ def pre_decompile_apk(apk_path, docker_image, output_dir):
         copy_to_container(container_id, str(apk_path), f"/apk/{apk_filename}")
         exec_run(
             container_id,
-            f"jadx -d /jadx-out --no-res /apk/{apk_filename} 2>/dev/null || true",
+            f"jadx -Xmx1500m -d /jadx-out --no-res /apk/{apk_filename} 2>/dev/null || true",
             "Pre-decompiling APK with jadx",
             timeout=600,
             verbose=True,
@@ -960,7 +965,13 @@ Examples:
     parser.add_argument("--no-bedrock", action="store_true",
                         help="Use Anthropic API instead of AWS Bedrock")
     parser.add_argument("--litellm-stage-budget", type=float, default=2,
-                        help="Per-stage LiteLLM API key budget in USD (default: 2)")
+                        help="Per-stage LiteLLM API key budget in USD (default: 2). "
+                             "Used for stage 1, and for stage 2 unless "
+                             "--litellm-stage2-budget is set.")
+    parser.add_argument("--litellm-stage2-budget", type=float, default=10,
+                        help="Per-key budget in USD for stage 2 (protocol analysis) "
+                             "keys. Stage 2 is deeper / longer than stage 1, so a "
+                             "higher budget is appropriate. Default: 10.")
 
     args = parser.parse_args()
 

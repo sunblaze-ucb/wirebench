@@ -5,5 +5,6 @@ bench_shell() {
     -e ANDROID_ADB_SERVER_PORT=5037 \
     -e FRIDA_HOST=cuttlefish \
     -e FRIDA_PORT=27042 \
+    -e FRIDA_PORT_32=27142 \
     agent bash
 }
