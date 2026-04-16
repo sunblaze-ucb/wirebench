@@ -57,6 +57,7 @@ else: print('arm64')
       --apk-dir input_data/apks \
       --traces-dir input_data/traces \
       --analysis-jsonl input_data/analysis.jsonl \
+      --jadx-cache-dir jadx-cache \
       "$@"
   fi
 }

@@ -561,15 +561,21 @@ def _locate_protocols_json(search_dir):
     return None
 
 
-def pre_decompile_apk(apk_path, docker_image, output_dir):
+def pre_decompile_apk(apk_path, docker_image, output_dir, jadx_cache_dir=None):
     """Decompile APK with jadx once and save to a local directory.
 
     Runs jadx in a throwaway container and copies the output back to the host.
+    If jadx_cache_dir is set, checks there first for pre-decompiled output
+    (keyed by APK package name) to avoid running jadx locally at all.
 
     Args:
         apk_path: Local path to the APK file
         docker_image: Docker image to use (must have jadx installed)
         output_dir: Local directory to store jadx output
+        jadx_cache_dir: Optional directory containing pre-decompiled jadx
+            output, with subdirectories named by package (e.g.
+            jadx-cache/com.baidu.netdisk/). Useful when jadx is run on a
+            more capable machine and rsynced to the bench host.
 
     Returns:
         Path to the local jadx-out directory, or None on failure
@@ -578,6 +584,17 @@ def pre_decompile_apk(apk_path, docker_image, output_dir):
     if jadx_dir.exists() and any(jadx_dir.iterdir()):
         print(f"  jadx output already exists at {jadx_dir}, reusing")
         return jadx_dir
+
+    # Check the shared cache before running jadx in a container
+    if jadx_cache_dir:
+        pkg = Path(apk_path).stem  # com.baidu.netdisk.apk -> com.baidu.netdisk
+        cached = Path(jadx_cache_dir) / pkg
+        if cached.exists() and any(cached.iterdir()):
+            print(f"  jadx cache hit: {cached}")
+            jadx_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copytree(str(cached), str(jadx_dir), dirs_exist_ok=True)
+            return jadx_dir
 
     jadx_dir.mkdir(parents=True, exist_ok=True)
     apk_filename = Path(apk_path).name
@@ -794,7 +811,8 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     jadx_dir = None
     if apk_path:
         print(f"\nPre-decompiling APK with jadx (once for all protocols)...")
-        jadx_dir = pre_decompile_apk(apk_path, args.docker_image, run_dir)
+        jadx_dir = pre_decompile_apk(apk_path, args.docker_image, run_dir,
+                                      jadx_cache_dir=args.jadx_cache_dir)
         if jadx_dir is None:
             return "failed_jadx", pipeline_result
 
@@ -945,6 +963,10 @@ Examples:
                              "Example: apk_output/com.example.app/20260326_152357")
     parser.add_argument("--max-protocols", type=int, default=None,
                         help="Maximum number of protocols to analyze in stage 2 (default: all)")
+    parser.add_argument("--jadx-cache-dir", default=None,
+                        help="Directory with pre-decompiled jadx output per package "
+                             "(e.g. jadx-cache/com.example.app/). Skips local jadx run "
+                             "when a cache hit is found.")
 
     # Agent selection
     parser.add_argument("--agent", choices=["claude-code", "openhands", "codex", "gemini-cli"],

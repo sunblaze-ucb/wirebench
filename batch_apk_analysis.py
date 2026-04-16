@@ -87,6 +87,7 @@ def parse_args():
     p.add_argument("--apk-dir", default="input_data/apks")
     p.add_argument("--traces-dir", default="input_data/traces")
     p.add_argument("--analysis-jsonl", default="input_data/analysis.jsonl")
+    p.add_argument("--jadx-cache-dir", default="jadx-cache")
     p.add_argument("--max-parallel", type=int,
                    default=int(os.environ.get("MAX_PARALLEL",
                                os.environ.get("DEVICE_COUNT", "1"))))
@@ -127,6 +128,7 @@ def build_run_cmd(pkg: str, args) -> list[str]:
         "--apk-dir", args.apk_dir,
         "--traces-dir", args.traces_dir,
         "--analysis-jsonl", args.analysis_jsonl,
+        "--jadx-cache-dir", args.jadx_cache_dir,
     ]
     if args.max_protocols is not None:
         cmd.extend(["--max-protocols", str(args.max_protocols)])
