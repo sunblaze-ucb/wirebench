@@ -87,7 +87,26 @@ def copy_to_container(container_id, src_path, dst_path, file_list=None):
             raise Exception(f"Failed to copy {src_path}: {result.stderr}")
 
 
-def start_container(image, env_vars=None, container_name=None, workdir=None):
+def _find_compose_network(network_name="wirewatch"):
+    """Find the docker compose network by its short name.
+
+    Docker compose prefixes network names with the project directory
+    (e.g. 'llm-scripts_wirewatch'). Look it up so raw `docker run`
+    containers can join the same network as the compose services.
+    """
+    result = subprocess.run(
+        ["docker", "network", "ls", "--filter", f"name={network_name}",
+         "--format", "{{{{.Name}}}}"],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.strip().splitlines():
+        if line.endswith(f"_{network_name}") or line == network_name:
+            return line
+    return None
+
+
+def start_container(image, env_vars=None, container_name=None, workdir=None,
+                    network=None):
     """Start a Docker container and return its ID.
 
     Args:
@@ -95,6 +114,8 @@ def start_container(image, env_vars=None, container_name=None, workdir=None):
         env_vars: Dict of environment variables to set in container (optional)
         container_name: Name for the container (optional)
         workdir: Working directory in container (optional)
+        network: Docker network to join. Defaults to the compose 'wirewatch'
+            network so the container can reach the cuttlefish service.
 
     Returns:
         Container ID
@@ -103,6 +124,10 @@ def start_container(image, env_vars=None, container_name=None, workdir=None):
 
     if container_name:
         cmd.extend(["--name", container_name])
+
+    net = network or _find_compose_network("wirewatch")
+    if net:
+        cmd.extend(["--network", net])
 
     if env_vars:
         for key, value in env_vars.items():

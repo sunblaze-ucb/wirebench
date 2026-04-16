@@ -586,14 +586,19 @@ def pre_decompile_apk(apk_path, docker_image, output_dir):
     try:
         container_id = start_container(docker_image)
         copy_to_container(container_id, str(apk_path), f"/apk/{apk_filename}")
-        exec_run(
+        rc, stdout, stderr = exec_run(
             container_id,
-            f"jadx -Xmx1500m -d /jadx-out --no-res /apk/{apk_filename} 2>/dev/null || true",
+            f"JAVA_OPTS='-Xmx4G' jadx -j 1 -d /jadx-out --no-res /apk/{apk_filename}",
+            #f"jadx -d /jadx-out --no-res /apk/{apk_filename}",
             "Pre-decompiling APK with jadx",
-            timeout=600,
+            timeout=4000,
             verbose=True,
-            check=False,
+            check=True,
         )
+        if rc != 0:
+            print(f"  jadx exit={rc}")
+            if stdout: print(f"  jadx stdout: {stdout[:2000]}")
+            if stderr: print(f"  jadx stderr: {stderr[:2000]}")
         subprocess.run(
             ["docker", "cp", f"{container_id}:/jadx-out/.", str(jadx_dir)],
             capture_output=True, check=True,
@@ -790,6 +795,9 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     if apk_path:
         print(f"\nPre-decompiling APK with jadx (once for all protocols)...")
         jadx_dir = pre_decompile_apk(apk_path, args.docker_image, run_dir)
+        if jadx_dir is None:
+            return "failed_jadx", pipeline_result
+
 
     # ----- Stage 2: Per-protocol Analysis -----
     analysis_dir = run_dir / "analysis"
