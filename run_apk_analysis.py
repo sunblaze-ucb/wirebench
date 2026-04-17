@@ -416,6 +416,9 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
             env_vars = {}
             container_name = f"apk-{args.agent}-{uuid.uuid4().hex[:8]}"
 
+            if hasattr(args, "device_env") and args.device_env:
+                env_vars.update(args.device_env)
+
             if args.agent == "claude-code":
                 env_vars.update(get_claude_code_env(args))
 
@@ -551,6 +554,50 @@ def _locate_protocols_json(search_dir):
     return None
 
 
+def adb_install_apk(apk_path, device_env):
+    """Install an APK on the device via ADB. Warns on failure, does not raise."""
+    serial = device_env.get("ADB_DEVICE_SERIAL", "")
+    adb_host = device_env.get("ANDROID_ADB_SERVER_ADDRESS", "")
+    adb_port = device_env.get("ANDROID_ADB_SERVER_PORT", "5037")
+    env = os.environ.copy()
+    if adb_host:
+        env["ANDROID_ADB_SERVER_ADDRESS"] = adb_host
+    if adb_port:
+        env["ANDROID_ADB_SERVER_PORT"] = adb_port
+    cmd = ["adb"]
+    if serial:
+        cmd += ["-s", serial]
+    cmd += ["install", "-r", "-g", str(apk_path)]
+    print(f"  Installing APK on device {serial}...")
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if result.returncode == 0:
+        print(f"  APK installed successfully")
+    else:
+        print(f"  Warning: APK install failed (rc={result.returncode}): {result.stderr.strip()}")
+
+
+def adb_uninstall_apk(pkg_name, device_env):
+    """Uninstall an APK from the device via ADB. Warns on failure, does not raise."""
+    serial = device_env.get("ADB_DEVICE_SERIAL", "")
+    adb_host = device_env.get("ANDROID_ADB_SERVER_ADDRESS", "")
+    adb_port = device_env.get("ANDROID_ADB_SERVER_PORT", "5037")
+    env = os.environ.copy()
+    if adb_host:
+        env["ANDROID_ADB_SERVER_ADDRESS"] = adb_host
+    if adb_port:
+        env["ANDROID_ADB_SERVER_PORT"] = adb_port
+    cmd = ["adb"]
+    if serial:
+        cmd += ["-s", serial]
+    cmd += ["uninstall", pkg_name]
+    print(f"  Uninstalling {pkg_name} from device {serial}...")
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if result.returncode == 0:
+        print(f"  APK uninstalled successfully")
+    else:
+        print(f"  Warning: APK uninstall failed (rc={result.returncode}): {result.stderr.strip()}")
+
+
 def pre_decompile_apk(apk_path, jadx_cache_dir):
     """Look up pre-decompiled jadx output from the cache directory.
 
@@ -613,6 +660,13 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     adb_host = "cuttlefish"
     args.device_env = build_device_env(arch, device_index, adb_host)
 
+    if apk_path:
+        adb_install_apk(apk_path, args.device_env)
+
+    def _cleanup():
+        if apk_path:
+            adb_uninstall_apk(args.apk_name, args.device_env)
+
     pipeline_result = {
         "stage1": None,
         "protocols_found": 0,
@@ -637,6 +691,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
         if not protocols_json_path:
             print(f"  Error: protocols.json not found under {resume_dir}")
+            _cleanup()
             return "failed", pipeline_result
 
         print(f"  Using protocols.json from: {protocols_json_path}")
@@ -709,6 +764,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
         if stage1_status != "success":
             print(f"\nStage 1 failed ({stage1_status}). Pipeline cannot continue.")
+            _cleanup()
             return "failed", pipeline_result
 
         # Locate protocols.json from stage 1 output
@@ -717,6 +773,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
         if not protocols_json_path:
             print("  Error: protocols.json not found in stage 1 output")
+            _cleanup()
             return "failed", pipeline_result
 
     protocols = parse_protocols_json(protocols_json_path)
@@ -724,6 +781,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
     if not protocols:
         print("\nNo protocols identified in stage 1. Nothing to analyze.")
+        _cleanup()
         return "no_protocols", pipeline_result
 
     # Filter to high-priority protocols only
@@ -744,6 +802,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
     if not protocols:
         print("\nNo protocols to analyze (--max-protocols 0). Stage 1 complete.")
+        _cleanup()
         return "success", pipeline_result
 
     # Locate the protocol_identification directory for copying into stage 2
@@ -847,6 +906,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     else:
         overall_status = "failed"
 
+    _cleanup()
     return overall_status, pipeline_result
 
 

@@ -1,7 +1,7 @@
 FROM us-docker.pkg.dev/android-cuttlefish-artifacts/cuttlefish-orchestration/cuttlefish-orchestration:stable
 
 ARG CF_ARCH=arm64
-ARG FRIDA_VERSION=17.9.1
+ARG FRIDA_VERSION=16.5.9
 
 # The upstream cuttlefish-orchestration image installs adb at
 # /usr/lib/cuttlefish-common/bin/adb (from the cuttlefish-base apt package),

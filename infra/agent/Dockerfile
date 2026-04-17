@@ -29,14 +29,21 @@ RUN wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apk
     printf '#!/bin/sh\nexec java -jar /usr/local/bin/apktool.jar "$@"\n' > /usr/local/bin/apktool && \
     chmod +x /usr/local/bin/apktool
 
-# ── radare2 5.9.8 + r2ghidra (Ghidra decompiler plugin → `pdg` command) ──────
+# ── radare2 5.9.8 ------------------------------------------------------──────
 RUN apt-get update -qq && apt-get install -y -qq cmake && rm -rf /var/lib/apt/lists/* && \
     git clone --depth 1 --branch 5.9.8 https://github.com/radareorg/radare2.git /opt/radare2-src && \
-    cd /opt/radare2-src && sys/install.sh && \
-    r2pm -U && r2pm -ci r2ghidra
+    cd /opt/radare2-src && sys/install.sh
+
+# ── r2ghidra ------------------------------------------------------──────
+#RUN r2pm init && r2pm -ci r2ghidra
+RUN git clone --depth 1 --branch 5.9.8 --recurse-submodules \
+        https://github.com/radareorg/r2ghidra.git /opt/r2ghidra-src && \
+    cd /opt/r2ghidra-src && \
+    ./configure --prefix=$(r2 -H R2_PREFIX) && \
+    make -j$(nproc) && make install
 
 # ── Python packages ──────────────────────────────────────────────────────────
-RUN pip3 install --no-cache-dir pycryptodome r2pipe lief pyelftools tomli boto3 frida-tools==14.8.1
+RUN pip3 install --no-cache-dir pycryptodome r2pipe lief pyelftools tomli boto3 frida-tools==12.5.0
 
 # ── ADB client (no server — agent talks to remote adb server in cuttlefish) ──
 RUN apt-get update -qq && \

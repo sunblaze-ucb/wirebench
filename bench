@@ -17,6 +17,7 @@ Commands:
   up         Boot the cuttlefish stack
   run        Run the pipeline on a single APK
   batch      Run the pipeline on a task list
+  validate   Run tooling sanity checks inside agent container
   reset      Soft- or hard-reset device state
   down       Tear down the stack
   shell      Drop into an agent container shell
@@ -34,6 +35,7 @@ case "$cmd" in
   up)        source "$REPO_ROOT/infra/bench/up.sh";        bench_up "$@" ;;
   run)       source "$REPO_ROOT/infra/bench/run.sh";       bench_run "$@" ;;
   batch)     source "$REPO_ROOT/infra/bench/batch.sh";     bench_batch "$@" ;;
+  validate)  source "$REPO_ROOT/infra/bench/validate.sh";  bench_validate "$@" ;;
   reset)     source "$REPO_ROOT/infra/bench/reset.sh";     bench_reset "$@" ;;
   down)      source "$REPO_ROOT/infra/bench/down.sh";      bench_down "$@" ;;
   shell)     source "$REPO_ROOT/infra/bench/shell.sh";     bench_shell "$@" ;;
