@@ -551,69 +551,25 @@ def _locate_protocols_json(search_dir):
     return None
 
 
-def pre_decompile_apk(apk_path, output_dir, jadx_cache_dir=None):
-    """Decompile APK with jadx once and save to a local directory.
-
-    Runs jadx in a throwaway container and copies the output back to the host.
-    If jadx_cache_dir is set, checks there first for pre-decompiled output
-    (keyed by APK package name) to avoid running jadx locally at all.
+def pre_decompile_apk(apk_path, jadx_cache_dir):
+    """Look up pre-decompiled jadx output from the cache directory.
 
     Args:
-        apk_path: Local path to the APK file
-        output_dir: Local directory to store jadx output
-        jadx_cache_dir: Optional directory containing pre-decompiled jadx
-            output, with subdirectories named by package (e.g.
-            jadx-cache/com.baidu.netdisk/). Useful when jadx is run on a
-            more capable machine and rsynced to the bench host.
+        apk_path: Local path to the APK file (used to derive package name)
+        jadx_cache_dir: Directory containing pre-decompiled jadx output,
+            with subdirectories named by package (e.g.
+            jadx-cache/com.baidu.netdisk/).
 
     Returns:
-        Path to the local jadx-out directory, or None on failure
+        Path to the cached jadx output directory, or None if not found
     """
-    jadx_dir = Path(output_dir) / "jadx-out"
-    if jadx_dir.exists() and any(jadx_dir.iterdir()):
-        print(f"  jadx output already exists at {jadx_dir}, reusing")
-        return jadx_dir
-
-    # Check the shared cache before running jadx in a container
-    if jadx_cache_dir:
-        pkg = Path(apk_path).stem  # com.baidu.netdisk.apk -> com.baidu.netdisk
-        cached = Path(jadx_cache_dir) / pkg
-        if cached.exists() and any(cached.iterdir()):
-            print(f"  jadx cache hit: {cached}")
-            jadx_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copytree(str(cached), str(jadx_dir), dirs_exist_ok=True)
-            return jadx_dir
-
-    jadx_dir.mkdir(parents=True, exist_ok=True)
-    apk_filename = Path(apk_path).name
-    container_id = None
-
-    try:
-        container_id = start_container(
-            volumes=[f"{jadx_dir.absolute()}:/jadx-out"],
-        )
-        copy_to_container(container_id, str(apk_path), f"/apk/{apk_filename}")
-        rc, stdout, stderr = exec_run(
-            container_id,
-            f"JAVA_OPTS='-Xmx4G' jadx -j 1 -d /jadx-out --no-res /apk/{apk_filename}",
-            "Pre-decompiling APK with jadx",
-            timeout=4000,
-            verbose=True,
-            check=True,
-        )
-        if rc != 0:
-            print(f"  jadx exit={rc}")
-            if stdout: print(f"  jadx stdout: {stdout[:2000]}")
-            if stderr: print(f"  jadx stderr: {stderr[:2000]}")
-        print(f"  jadx output saved to {jadx_dir}")
-        return jadx_dir
-    except Exception as e:
-        print(f"  Warning: jadx pre-decompile failed: {e}")
-        return None
-    finally:
-        if container_id:
-            cleanup_container(container_id)
+    pkg = Path(apk_path).stem
+    cached = Path(jadx_cache_dir) / pkg
+    if cached.is_dir() and any(cached.iterdir()):
+        print(f"  jadx cache hit: {cached}")
+        return cached
+    print(f"  jadx cache miss: {cached} not found")
+    return None
 
 
 def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
@@ -793,14 +749,12 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     # Locate the protocol_identification directory for copying into stage 2
     proto_id_output_dir = protocols_json_path.parent
 
-    # ----- Pre-decompile APK once for all stage 2 runs -----
+    # ----- Look up pre-decompiled jadx output -----
     jadx_dir = None
-    if apk_path:
-        print(f"\nPre-decompiling APK with jadx (once for all protocols)...")
-        jadx_dir = pre_decompile_apk(apk_path, run_dir,
-                                      jadx_cache_dir=args.jadx_cache_dir)
+    if apk_path and args.jadx_cache_dir:
+        jadx_dir = pre_decompile_apk(apk_path, args.jadx_cache_dir)
         if jadx_dir is None:
-            return "failed_jadx", pipeline_result
+            print("  Continuing without jadx output")
 
 
     # ----- Stage 2: Per-protocol Analysis -----

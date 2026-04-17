@@ -30,6 +30,41 @@ from pathlib import Path
 from typing import Literal
 
 
+def _find_latest_identification(pkg: str, output_dir: str = "apk_output") -> str | None:
+    """Find the most recent run directory that has a successful protocols.json.
+
+    Scans apk_output/<pkg>/<timestamp>/identification/output/ for protocols.json.
+    Timestamps are lexicographically sortable (YYYYMMDD_HHMMSS), so we iterate
+    in reverse to find the most recent one first.
+
+    Returns the run directory path (e.g. apk_output/<pkg>/20260416_120000),
+    or None if no successful identification is found.
+    """
+    pkg_dir = Path(output_dir) / pkg
+    if not pkg_dir.is_dir():
+        return None
+
+    # List timestamp dirs in reverse chronological order
+    run_dirs = sorted(
+        (d for d in pkg_dir.iterdir() if d.is_dir() and not d.name.startswith(".")),
+        reverse=True,
+    )
+    for run_dir in run_dirs:
+        stage1_output = run_dir / "identification" / "output"
+        if not stage1_output.exists():
+            continue
+        # Check primary location
+        primary = stage1_output / "protocol_identification" / "protocols.json"
+        if primary.exists():
+            return str(run_dir)
+        # Fallback: recursive search
+        candidates = list(stage1_output.rglob("protocols.json"))
+        if candidates:
+            return str(run_dir)
+
+    return None
+
+
 def _open_batch_log(pkg: str) -> tuple[Path, "object"]:
     """Open apk_output/<pkg>/batch_runner_<timestamp>.log for streaming.
 
@@ -98,6 +133,10 @@ def parse_args():
                    default=int(os.environ.get("TIMEOUT", "5400")))
     p.add_argument("--model-provider",
                    default=os.environ.get("MODEL_PROVIDER", "litellm"))
+    p.add_argument("--resume", action="store_true",
+                   help="For each APK, resume from the most recent run that has "
+                        "a successful stage-1 identification (protocols.json). "
+                        "Skips stage 1 and only re-runs stage 2.")
     p.add_argument("--dry-run", action="store_true",
                    default=os.environ.get("DRY_RUN") == "1")
     return p.parse_args()
@@ -121,7 +160,7 @@ def classify_apk(apk_dir: str, pkg: str) -> str:
     return "x86_64" if arch == "x86_64" else "arm64"
 
 
-def build_run_cmd(pkg: str, args) -> list[str]:
+def build_run_cmd(pkg: str, args, resume_from: str | None = None) -> list[str]:
     """Build the run_apk_analysis.py command for a single APK."""
     cmd = [
         sys.executable, "run_apk_analysis.py", pkg,
@@ -132,6 +171,8 @@ def build_run_cmd(pkg: str, args) -> list[str]:
     ]
     if args.max_protocols is not None:
         cmd.extend(["--max-protocols", str(args.max_protocols)])
+    if resume_from:
+        cmd.extend(["--resume-from", resume_from])
     return cmd
 
 
@@ -143,7 +184,15 @@ async def run_local(pkg: str, args, sem: asyncio.Semaphore,
             await pool_cv.wait()
         device_idx = device_pool.popleft()
 
-    cmd = build_run_cmd(pkg, args)
+    resume_from = None
+    if args.resume:
+        resume_from = _find_latest_identification(pkg)
+        if resume_from:
+            print(f"  resume: {pkg} -> {resume_from}")
+        else:
+            print(f"  resume: {pkg} -> no previous identification found, running full pipeline")
+
+    cmd = build_run_cmd(pkg, args, resume_from=resume_from)
     env = os.environ.copy()
     env["WIREWATCH_FORCED_DEVICE_INDEX"] = str(device_idx)
 
@@ -195,7 +244,13 @@ async def run_x86_ssh(pkg: str, args, sem: asyncio.Semaphore,
             await pool_cv.wait()
         device_idx = device_pool.popleft()
 
-    remote_cmd = build_run_cmd(pkg, args)
+    resume_from = None
+    if args.resume:
+        resume_from = _find_latest_identification(pkg)
+        if resume_from:
+            print(f"  resume: {pkg} -> {resume_from}")
+
+    remote_cmd = build_run_cmd(pkg, args, resume_from=resume_from)
     ssh_cmd = [
         "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
         x86_ssh,
