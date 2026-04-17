@@ -64,8 +64,8 @@ Stage 1 has already completed traffic analysis. **Do not spend time re-parsing P
 
 ---
 ### 2. Analyze Decompiled Java Code
-The APK has been **pre-decompiled with jadx** and the output is available at `/output/jadx-out/`. Do NOT re-run jadx — use the existing decompiled sources directly.
-- Browse `/output/jadx-out/sources/` for decompiled Java classes
+The APK has been **pre-decompiled with jadx** and the output is available at `/jadx-out/`. Do NOT re-run jadx — use the existing decompiled sources directly.
+- Browse `/jadx-out/sources/` for decompiled Java classes
 - Use `grep -r` to search for endpoint URLs, encryption class names, and key strings
 - Locate the Java method that sends traffic to that endpoint
 - Trace data flow backwards from the send call to locate decryption relevant material including:

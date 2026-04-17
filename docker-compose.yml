@@ -31,9 +31,6 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
       LITELLM_USER_ID: ${LITELLM_USER_ID:-}
       LITELLM_TEAM_ID: ${LITELLM_TEAM_ID:-}
-    volumes:
-      - ./input_data:/input_data:ro
-      - ./apk_output:/output
     networks: [wirewatch]
 
 networks:

@@ -64,7 +64,6 @@ from run_agent import (
 # Default timeout in seconds (90 minutes)
 DEFAULT_TIMEOUT = 5400
 
-DEFAULT_IMAGE = "wirewatch/agent:latest"
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
 
@@ -352,7 +351,7 @@ def format_feedback(validation, attempt, trajectory_summary=None):
 
 def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
               stage_dir, expected_outputs, extra_container_files=None,
-              stage_label=None):
+              stage_label=None, extra_volumes=None):
     """Run a single agent stage with optional feedback loop.
 
     Args:
@@ -367,6 +366,7 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
         extra_container_files: Optional list of (local_path, container_path) tuples
             to copy into the container after workspace setup
         stage_label: Label for LiteLLM key alias (e.g. "stage1", "stage2-PROTO")
+        extra_volumes: Optional list of volume mount strings to add to the container
 
     Returns:
         tuple: (final_status, all_attempts)
@@ -418,11 +418,14 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
             if args.agent == "claude-code":
                 env_vars.update(get_claude_code_env(args))
 
+            vols = [f"{output_dir.absolute()}:/output"]
+            if extra_volumes:
+                vols.extend(extra_volumes)
             container_id = start_container(
-                args.docker_image,
                 env_vars=env_vars if env_vars else None,
                 container_name=container_name,
                 workdir="/output",
+                volumes=vols,
             )
             print(f"  Container: {container_id[:12]}")
 
@@ -472,21 +475,7 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
             # Validate outputs
             validation = validate_outputs(container_id, expected_outputs)
 
-            # Copy output files from container
-            local_output = stage_dir / f"output_attempt_{attempt}"
-            local_output.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["docker", "cp", f"{container_id}:/output/.", str(local_output)],
-                capture_output=True,
-            )
-
-            # Also copy to the main output dir (latest attempt wins)
-            subprocess.run(
-                ["docker", "cp", f"{container_id}:/output/.", str(output_dir)],
-                capture_output=True,
-            )
-
-            # Cleanup container
+            # Cleanup container (output is already on host via bind mount)
             cleanup_container(container_id)
             container_id = None
 
@@ -561,7 +550,7 @@ def _locate_protocols_json(search_dir):
     return None
 
 
-def pre_decompile_apk(apk_path, docker_image, output_dir, jadx_cache_dir=None):
+def pre_decompile_apk(apk_path, output_dir, jadx_cache_dir=None):
     """Decompile APK with jadx once and save to a local directory.
 
     Runs jadx in a throwaway container and copies the output back to the host.
@@ -570,7 +559,6 @@ def pre_decompile_apk(apk_path, docker_image, output_dir, jadx_cache_dir=None):
 
     Args:
         apk_path: Local path to the APK file
-        docker_image: Docker image to use (must have jadx installed)
         output_dir: Local directory to store jadx output
         jadx_cache_dir: Optional directory containing pre-decompiled jadx
             output, with subdirectories named by package (e.g.
@@ -601,12 +589,13 @@ def pre_decompile_apk(apk_path, docker_image, output_dir, jadx_cache_dir=None):
     container_id = None
 
     try:
-        container_id = start_container(docker_image)
+        container_id = start_container(
+            volumes=[f"{jadx_dir.absolute()}:/jadx-out"],
+        )
         copy_to_container(container_id, str(apk_path), f"/apk/{apk_filename}")
         rc, stdout, stderr = exec_run(
             container_id,
             f"JAVA_OPTS='-Xmx4G' jadx -j 1 -d /jadx-out --no-res /apk/{apk_filename}",
-            #f"jadx -d /jadx-out --no-res /apk/{apk_filename}",
             "Pre-decompiling APK with jadx",
             timeout=4000,
             verbose=True,
@@ -616,10 +605,6 @@ def pre_decompile_apk(apk_path, docker_image, output_dir, jadx_cache_dir=None):
             print(f"  jadx exit={rc}")
             if stdout: print(f"  jadx stdout: {stdout[:2000]}")
             if stderr: print(f"  jadx stderr: {stderr[:2000]}")
-        subprocess.run(
-            ["docker", "cp", f"{container_id}:/jadx-out/.", str(jadx_dir)],
-            capture_output=True, check=True,
-        )
         print(f"  jadx output saved to {jadx_dir}")
         return jadx_dir
     except Exception as e:
@@ -811,7 +796,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     jadx_dir = None
     if apk_path:
         print(f"\nPre-decompiling APK with jadx (once for all protocols)...")
-        jadx_dir = pre_decompile_apk(apk_path, args.docker_image, run_dir,
+        jadx_dir = pre_decompile_apk(apk_path, run_dir,
                                       jadx_cache_dir=args.jadx_cache_dir)
         if jadx_dir is None:
             return "failed_jadx", pipeline_result
@@ -870,12 +855,13 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
 
         stage2_dir = analysis_dir / protocol_id
 
-        # Copy stage 1 outputs and pre-decompiled jadx output into container
+        # Copy stage 1 outputs into container; mount jadx-out as volume
         extra_files = [
             (str(proto_id_output_dir), "/protocol_identification"),
         ]
+        stage2_volumes = []
         if jadx_dir:
-            extra_files.append((str(jadx_dir), "/output/jadx-out"))
+            stage2_volumes.append(f"{Path(jadx_dir).absolute()}:/jadx-out:ro")
 
         stage2_status, stage2_attempts = run_stage(
             args, apk_path, traces, analysis_content, metadata,
@@ -884,6 +870,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
             expected_outputs=stage2_expected,
             extra_container_files=extra_files,
             stage_label=f"stage2-{protocol_id}",
+            extra_volumes=stage2_volumes,
         )
 
         pipeline_result["stage2"][protocol_id] = {
@@ -971,8 +958,6 @@ Examples:
     # Agent selection
     parser.add_argument("--agent", choices=["claude-code", "openhands", "codex", "gemini-cli"],
                         default="claude-code", help="Agent backend (default: claude-code)")
-    parser.add_argument("--docker-image", default=DEFAULT_IMAGE,
-                        help=f"Docker image for containers (default: {DEFAULT_IMAGE})")
 
     # Execution
     parser.add_argument("--max-attempts", type=int, default=1,
