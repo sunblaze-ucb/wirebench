@@ -5,8 +5,9 @@
 An Android device is available for dynamic instrumentation. The `adb` client is
 pre-configured via `ANDROID_ADB_SERVER_ADDRESS` and `ANDROID_ADB_SERVER_PORT` —
 use `adb -s $ADB_DEVICE_SERIAL <command>` to target your assigned device. The
-Frida server is reachable at `frida -H $FRIDA_HOST:$FRIDA_PORT`. Do not assume
-`localhost` or `127.0.0.1` — always use the env vars.
+Frida server is reachable at `frida -H $FRIDA_HOST:$FRIDA_PORT` for analyzing 64
+bit binaries, and `frida -H $FRIDA_HOST:$FRIDA_PORT_32` for analyzing 32-bit
+binaries. Do not assume `localhost` or `127.0.0.1` — always use the env vars.
 
 ## Input and File Layout
 

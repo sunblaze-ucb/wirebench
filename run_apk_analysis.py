@@ -89,6 +89,7 @@ def build_device_env(arch: str, device_index: int, adb_host: str) -> dict:
         "ADB_DEVICE_SERIAL": f"0.0.0.0:{6520 + device_index}",
         "FRIDA_HOST": adb_host,
         "FRIDA_PORT": str(27042 + device_index),
+        "FRIDA_PORT_32": str(27142 + device_index),
         "DEVICE_INDEX": str(device_index),
         "ARCH": arch,
     }
