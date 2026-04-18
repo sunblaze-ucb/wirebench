@@ -95,7 +95,7 @@ _bench_up_x86_only() {
 }
 
 _bench_wait_healthy() {
-  local deadline=$(( $(date +%s) + 360 ))
+  local deadline=$(( $(date +%s) + 600 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     local state
     state=$(docker compose ps cuttlefish --format "{{.Status}}" 2>/dev/null || echo "")
@@ -109,7 +109,7 @@ _bench_wait_healthy() {
     fi
     sleep 5
   done
-  echo "ERROR: cuttlefish did not become healthy in 6 minutes" >&2
+  echo "ERROR: cuttlefish did not become healthy in 10 minutes" >&2
   docker compose logs cuttlefish --tail 50 >&2
   return 1
 }

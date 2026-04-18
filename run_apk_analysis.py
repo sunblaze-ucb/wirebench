@@ -61,8 +61,8 @@ from run_agent import (
     summarize_trajectory,
 )
 
-# Default timeout in seconds (90 minutes)
-DEFAULT_TIMEOUT = 5400
+# Default timeout in seconds (3 hr)
+DEFAULT_TIMEOUT = 10800
 
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
