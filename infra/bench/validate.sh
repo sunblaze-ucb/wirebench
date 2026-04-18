@@ -58,7 +58,6 @@ EOF
       -e ANDROID_ADB_SERVER_PORT=5037 \
       -e FRIDA_HOST=cuttlefish \
       -e FRIDA_PORT=27042 \
-      -e FRIDA_PORT_32=27142 \
       -e ADB_DEVICE_SERIAL=0.0.0.0:6520 \
       -e PKG="$pkg" \
       -v "$checks_dir:/checks:ro" \

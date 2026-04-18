@@ -71,16 +71,10 @@ log "adb server listening on 0.0.0.0:5037"
 
 # 6. Per-device provisioning
 #
-# Each device gets up to two frida-servers so we can hook both 64-bit and
-# 32-bit processes (frida requires server bitness to match target bitness):
-#   device i -> 64-bit frida on host port 27042+i (device port 27042)
-#            -> 32-bit frida on host port 27142+i (device port 27142)
-# The 32-bit server is only pushed if /opt/frida/frida-server-32 was baked
-# into the image (arm64 and x86_64 builds; skipped elsewhere).
+# Each device gets a frida-server forwarded to host port 27042+i.
 for i in $(seq 0 $((DEVICE_COUNT - 1))); do
   SERIAL="0.0.0.0:$((6520 + i))"
-  FRIDA_PORT_64=$((27042 + i))
-  FRIDA_PORT_32=$((27142 + i))
+  FRIDA_PORT=$((27042 + i))
   log "provisioning device $i ($SERIAL)..."
   # Cuttlefish booted its devices before we restarted the adb server, so the
   # auto-connect happened to a now-dead server. Explicitly connect each
@@ -90,18 +84,10 @@ for i in $(seq 0 $((DEVICE_COUNT - 1))); do
   adb -s "$SERIAL" root
   adb -s "$SERIAL" wait-for-device
 
-  # 64-bit frida-server (listens on device port 27042, the frida default)
+  # Push and start frida-server (listens on device port 27042, the frida default)
   adb -s "$SERIAL" push /opt/frida/frida-server /data/local/tmp/frida-server
   adb -s "$SERIAL" shell chmod +x /data/local/tmp/frida-server
   adb -s "$SERIAL" shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &" || true
-
-  # 32-bit frida-server (listens on device port 27142 to avoid clashing
-  # with the 64-bit one). Only present on arm64/x86_64 images.
-  if [ -f /opt/frida/frida-server-32 ]; then
-    adb -s "$SERIAL" push /opt/frida/frida-server-32 /data/local/tmp/frida-server-32
-    adb -s "$SERIAL" shell chmod +x /data/local/tmp/frida-server-32
-    adb -s "$SERIAL" shell "nohup /data/local/tmp/frida-server-32 -l 127.0.0.1:27142 >/dev/null 2>&1 &" || true
-  fi
 
   sleep 2
   if ! adb -s "$SERIAL" shell pidof frida-server >/dev/null 2>&1; then
@@ -109,16 +95,9 @@ for i in $(seq 0 $((DEVICE_COUNT - 1))); do
     adb -s "$SERIAL" shell dmesg | tail -50 >&2 || true
     exit 1
   fi
-  if [ -f /opt/frida/frida-server-32 ] && \
-     ! adb -s "$SERIAL" shell pidof frida-server-32 >/dev/null 2>&1; then
-    log "WARN: 32-bit frida-server failed to start on device $i (64-bit only)"
-  fi
 
-  adb -s "$SERIAL" forward tcp:"$FRIDA_PORT_64" tcp:27042
-  if [ -f /opt/frida/frida-server-32 ]; then
-    adb -s "$SERIAL" forward tcp:"$FRIDA_PORT_32" tcp:27142 || true
-  fi
-  log "device $i ready: adb=$SERIAL frida64=$FRIDA_PORT_64 frida32=$FRIDA_PORT_32"
+  adb -s "$SERIAL" forward tcp:"$FRIDA_PORT" tcp:27042
+  log "device $i ready: adb=$SERIAL frida=$FRIDA_PORT"
 done
 
 # 7. Write ready sentinel (JSON describing every device)
@@ -129,8 +108,8 @@ done
   printf '  "devices": [\n'
   for i in $(seq 0 $((DEVICE_COUNT - 1))); do
     [ $i -gt 0 ] && printf ',\n'
-    printf '    {"index": %d, "adb_serial": "0.0.0.0:%d", "frida_port": %d, "frida_port_32": %d}' \
-      "$i" "$((6520 + i))" "$((27042 + i))" "$((27142 + i))"
+    printf '    {"index": %d, "adb_serial": "0.0.0.0:%d", "frida_port": %d}' \
+      "$i" "$((6520 + i))" "$((27042 + i))"
   done
   printf '\n  ]\n}\n'
 } > "$READY"

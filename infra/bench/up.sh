@@ -39,7 +39,6 @@ EOF
     local dev_count="${DEVICE_COUNT:-1}"
     local high_adb=$((6520 + dev_count - 1))
     local high_frida=$((27042 + dev_count - 1))
-    local high_frida_32=$((27142 + dev_count - 1))
     cat > docker-compose.override.yml <<OVERRIDE
 services:
   cuttlefish:
@@ -47,7 +46,6 @@ services:
       - "127.0.0.1:5037:5037"
       - "127.0.0.1:6520-${high_adb}:6520-${high_adb}"
       - "127.0.0.1:27042-${high_frida}:27042-${high_frida}"
-      - "127.0.0.1:27142-${high_frida_32}:27142-${high_frida_32}"
 OVERRIDE
   else
     rm -f docker-compose.override.yml
