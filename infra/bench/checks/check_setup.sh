@@ -3,8 +3,11 @@
 set -euo pipefail
 
 PKG="${PKG:?PKG environment variable is required}"
+ADB_DEVICE_SERIAL="${ADB_DEVICE_SERIAL:?ADB_DEVICE_SERIAL environment variable is required}"
 
-echo "[setup] Installing and launching $PKG ..."
+ADB=(adb -s "$ADB_DEVICE_SERIAL")
+
+echo "[setup] Installing and launching $PKG on $ADB_DEVICE_SERIAL ..."
 
 # Look for the APK in /apk/
 apk_file="/apk/${PKG}.apk"
@@ -20,18 +23,18 @@ fi
 echo "[setup] Found APK: $apk_file"
 
 echo "[setup] Installing on device ..."
-if ! adb install -r -g "$apk_file" 2>&1; then
+if ! "${ADB[@]}" install -r -g "$apk_file" 2>&1; then
   echo "[setup] FAIL: adb install failed" >&2
   exit 1
 fi
 
 echo "[setup] Launching $PKG ..."
-adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 2>&1
+"${ADB[@]}" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 2>&1
 
 sleep 3
 
-if adb shell pidof "$PKG" >/dev/null 2>&1; then
-  echo "[setup] $PKG is running (PID $(adb shell pidof "$PKG"))"
+if "${ADB[@]}" shell pidof "$PKG" >/dev/null 2>&1; then
+  echo "[setup] $PKG is running (PID $("${ADB[@]}" shell pidof "$PKG"))"
 else
   echo "[setup] WARNING: $PKG may not have started — pidof returned empty" >&2
 fi

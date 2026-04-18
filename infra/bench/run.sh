@@ -49,6 +49,7 @@ else: print('arm64')
         -e ANDROID_ADB_SERVER_ADDRESS=cuttlefish \
         -e ANDROID_ADB_SERVER_PORT=5037 \
         -e FRIDA_HOST=cuttlefish -e FRIDA_PORT=27042 \
+        -e ADB_DEVICE_SERIAL=0.0.0.0:6520 \
         -e DEVICE_INDEX=0 -e ARCH=x86_64 \
         agent python run_apk_analysis.py $pkg $*"
     rsync -az "${X86_SSH}:~/wirellm-bench/apk_output/${pkg}/" "./apk_output/${pkg}/" 2>/dev/null || true
