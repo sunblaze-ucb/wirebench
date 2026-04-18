@@ -5,9 +5,8 @@
 An Android device is available for dynamic instrumentation. The `adb` client is
 pre-configured via `ANDROID_ADB_SERVER_ADDRESS` and `ANDROID_ADB_SERVER_PORT` —
 use `adb -s $ADB_DEVICE_SERIAL <command>` to target your assigned device. The
-Frida server is reachable at `frida -H $FRIDA_HOST:$FRIDA_PORT` for analyzing 64
-bit binaries, and `frida -H $FRIDA_HOST:$FRIDA_PORT_32` for analyzing 32-bit
-binaries. Do not assume `localhost` or `127.0.0.1` — always use the env vars.
+Frida server is reachable at `frida -H $FRIDA_HOST:$FRIDA_PORT`.
+Do not assume `localhost` or `127.0.0.1` — always use the env vars.
 
 ## Input and File Layout
 
@@ -40,11 +39,11 @@ The audit should:
 
 | Tool                     | Purpose                                  |
 |--------------------------|------------------------------------------|
-| **JADX**                 | Decompile APK Java code                  |
+| **gzip, base64, openssl**| Handle transformations and crypto        |
+| **JADX, apktool**        | Decompile, unpack APK Java code          |
 | **tshark**               | Inspect network captures                 |
 | **radare2 (r2) + r2ghidra** | Native code analysis                |
-| **analyzeHeadless**      | Native code analysis                     |
-| **gzip, base64, openssl**| Handle transformations and crypto        |
+| **Frida, adb**           | Dynamic analysis                         |
 
 ---
 
@@ -64,7 +63,11 @@ Stage 1 has already completed traffic analysis. **Do not spend time re-parsing P
 - Only use `tshark` if you need a specific raw byte extract not available in the existing analysis
 
 ---
-### 2. Analyze Decompiled Java Code
+### 2. Reverse-engineering
+
+You have three primary tool suites at your disposal for reverse-engineering:
+
+#### A. Analyzing decompiled Java source code.
 The APK has been **pre-decompiled with jadx** and the output is available at `/jadx-out/`. Do NOT re-run jadx — use the existing decompiled sources directly.
 - Browse `/jadx-out/sources/` for decompiled Java classes
 - Use `grep -r` to search for endpoint URLs, encryption class names, and key strings
@@ -87,10 +90,7 @@ Record where each transformation step occurs:
 - file path
 - line number(s)
 
-**Outcome:** Endpoint-specific cryptographic pipelines reconstructed at the Java level.
-
-
-### 3. Reverse Engineer and Analyze Native Components
+#### B. Native component static analysis
 If protocol-relevant steps are delegated to native code, fully reverse engineer the native components to determine how bytes are produced, transformed, or consumed for this endpoint. 
 
 Tools:
@@ -104,9 +104,25 @@ Tools:
   - constants or protocol markers
 - Record addresses, function names, and constants
 
-**Outcome:** Endpoint-specific cryptographic pipelines reconstructed at the Native code level or ruled out
 
-### 4. Attempt Decryption and Verification
+#### C. Dynamic analysis via Frida, adb
+Use Frida to dynamically analyze the application to determine how bytes are produced, transformed, or consumed for this endpoint.
+First try very small trials to figure out how to best use frida for this app before scaling to whatever is needed. The Frida
+version is 16.5.9.
+Reminder: use `adb -s $ADB_DEVICE_SERIAL <command>` for adb and `frida -H $FRIDA_HOST:$FRIDA_PORT` for Frida a ccess.
+
+Environment:
+- Open application and automate interactions (multiple) with adb shell monkey
+- Once the application is open, use frida to dynamically analyze
+- Trace how data is transformed
+- Identify:
+  - cryptographic algorithms and modes
+  - key, IV, nonce, or seed material
+  - constants or protocol markers
+
+**Outcome:** Endpoint-specific cryptographic pipelines reconstructed between Java and Native code
+
+### 3. Attempt Decryption and Verification
 This is the key verification of success. 
 For the selected endpoint:
 - reverse transformation pipeline
@@ -121,7 +137,7 @@ For the selected endpoint:
 
 **Outcome:** Decryption confirmed, rejected, or marked uncertain
 
-### 5. **Generate Final Report**
+### 4. **Generate Final Report**
 - Produce a final Markdown report at `<application-name>-output\<protocol>\<protocol>-findings.md` that walks the reader through the analysis
 
 The report should read as an investigation log and must include:
@@ -178,7 +194,7 @@ All subordinate files (scripts, decrypted outputs, logs) must live under `<appli
 
 All subordinate files must live under: `<application-name>-output/<protocol`>
 
-### 6. Generate Machine-Readable JSON 
+### 5. Generate Machine-Readable JSON 
 Generate `<application_name>_output/<protocol>/<protocol>_results.json` to be a machine readable report.
 
 Must include the following fields:
@@ -217,12 +233,5 @@ Must include the following fields:
 - When evidence is incomplete or ambiguous, explicitly state the uncertainty and label such statements as hypotheses.
 - Only describe steps that changed or confirmed your beliefs about the protocol.
   - If a branch of analysis did not affect the final conclusions, either omit it entirely or summarize it in a single short statement explaining that it was explored and discarded.
-
-## Appendix
-
-- Notes: 
-  - jadx may have some errors, this is ok
-  - r2 commands may return an error. In this case, check if output includes solution command to run
-
 
 
