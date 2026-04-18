@@ -9,14 +9,17 @@ bench_validate() {
         cat <<EOF
 Usage: ./bench validate [--pkg <package-name>]
 
-Run sanity checks inside the agent container against the running
+Run sanity checks inside the agent container against every running
 cuttlefish device. Requires 'bench up' first.
 
-Checks:
-  1. r2ghidra    – radare2 + Ghidra decompiler plugin works
-  2. frida-conn  – Frida server reachable (64-bit & 32-bit)
-  3. frida-java  – Java.perform + deoptimizeEverything on target app
-  4. frida-native – Interceptor.attach on libc function
+Checks (per device):
+  1. setup           – install and launch target app
+  2. r2ghidra        – radare2 + Ghidra decompiler plugin works
+  3. frida-conn      – Frida server reachable
+  4. frida-java      – Java.perform on target app
+  5. frida-native    – Interceptor.attach on libc function
+  6. frida-java-hook – Hook crypto classes on target app
+  7. frida-native-hook – Hook native libs on target app
 
 Options:
   --pkg <name>  Package to test against (default: com.sina.weibo)
@@ -32,6 +35,16 @@ EOF
     return 1
   fi
 
+  # Read device list from the ready sentinel
+  local dev_count
+  dev_count=$(docker compose exec -T cuttlefish \
+    python3 -c "import json; print(json.load(open('/cf/ready'))['device_count'])" 2>/dev/null || echo "")
+
+  if [ -z "$dev_count" ] || [ "$dev_count" -lt 1 ] 2>/dev/null; then
+    # Fallback: assume DEVICE_COUNT or 1
+    dev_count="${DEVICE_COUNT:-1}"
+  fi
+
   local checks_dir="$REPO_ROOT/infra/bench/checks"
   local passed=0 failed=0 total=0
 
@@ -45,34 +58,45 @@ EOF
     "check_frida_native_hook.sh:frida-native-hook"
   )
 
-  for entry in "${check_scripts[@]}"; do
-    local script="${entry%%:*}"
-    local label="${entry##*:}"
-    total=$((total + 1))
+  for i in $(seq 0 $((dev_count - 1))); do
+    local adb_serial="0.0.0.0:$((6520 + i))"
+    local frida_port=$((27042 + i))
 
     echo ""
-    echo "==> [$total] $label"
+    echo "############################################"
+    echo "  Device $i — adb=$adb_serial frida=:$frida_port"
+    echo "############################################"
 
-    if docker compose run --rm \
-      -e ANDROID_ADB_SERVER_ADDRESS=cuttlefish \
-      -e ANDROID_ADB_SERVER_PORT=5037 \
-      -e FRIDA_HOST=cuttlefish \
-      -e FRIDA_PORT=27042 \
-      -e ADB_DEVICE_SERIAL=0.0.0.0:6520 \
-      -e PKG="$pkg" \
-      -v "$checks_dir:/checks:ro" \
-      -v "$REPO_ROOT/input_data/apks:/apk:ro" \
-      agent bash /checks/"$script"; then
-      echo "  PASS: $label"
-      passed=$((passed + 1))
-    else
-      echo "  FAIL: $label"
-      failed=$((failed + 1))
-    fi
+    for entry in "${check_scripts[@]}"; do
+      local script="${entry%%:*}"
+      local label="${entry##*:}"
+      total=$((total + 1))
+
+      echo ""
+      echo "==> [$i/$label]"
+
+      if docker compose run --rm \
+        -e ANDROID_ADB_SERVER_ADDRESS=cuttlefish \
+        -e ANDROID_ADB_SERVER_PORT=5037 \
+        -e FRIDA_HOST=cuttlefish \
+        -e FRIDA_PORT="$frida_port" \
+        -e ADB_DEVICE_SERIAL="$adb_serial" \
+        -e PKG="$pkg" \
+        -v "$checks_dir:/checks:ro" \
+        -v "$REPO_ROOT/input_data/apks:/apk:ro" \
+        agent bash /checks/"$script"; then
+        echo "  PASS: device $i / $label"
+        passed=$((passed + 1))
+      else
+        echo "  FAIL: device $i / $label"
+        failed=$((failed + 1))
+      fi
+    done
   done
 
   echo ""
   echo "==============================="
+  echo "  Devices: $dev_count"
   echo "  Results: $passed/$total passed"
   if [ "$failed" -gt 0 ]; then
     echo "  $failed check(s) FAILED"
