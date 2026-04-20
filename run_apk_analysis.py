@@ -23,6 +23,7 @@ Examples:
 """
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -61,8 +62,8 @@ from run_agent import (
     summarize_trajectory,
 )
 
-# Default timeout in seconds (3 hr)
-DEFAULT_TIMEOUT = 10800
+# Default timeout in seconds -- for protocol analysis
+DEFAULT_TIMEOUT = 5400
 
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
@@ -181,10 +182,17 @@ used by the Android application **{apk_name}**.
   - `protocols.json` — full protocol inventory from stage 1
   - `protocols_report.md` — discovery report from stage 1
 - **Output directory**: `{output_dir}/`
+- **Protocol identifier**: `{protocol_id}`
 
-All output files described below should be written under `{output_dir}/`.
-Wherever the instructions reference `<application-name>-output/<protocol>`, \
-use `{output_dir}` instead. The protocol identifier is `{protocol_id}`.
+All output files described below should be written directly under \
+`{output_dir}/` (no subdirectories). Wherever the instructions reference \
+`<output_dir>`, use the literal path `{output_dir}`, and wherever they \
+reference `<protocol>`, use `{protocol_id}`.
+
+Specifically, write exactly these files:
+  - `{output_dir}/{protocol_id}_results.json`
+  - `{output_dir}/break.py`
+  - any ciphertext / plaintext samples directly under `{output_dir}/`
 
 ## Selected Protocol
 
@@ -272,6 +280,92 @@ def get_protocol_id(protocol, index):
     sanitized = re.sub(r"_+", "_", sanitized).strip("_")
     # Truncate
     return sanitized[:80] if sanitized else f"protocol_{index}"
+
+
+# =============================================================================
+# Protocol cluster lookup
+# =============================================================================
+
+def load_protocol_clusters(path):
+    """Load a protocol clusters CSV.
+
+    Expected columns include `app_name`, `protocol_id`, and `cluster_rank`.
+    Two (app_name, protocol_id) rows are cluster peers iff they share the
+    same cluster_rank.
+
+    Returns:
+        (rank_to_members, member_to_rank) where
+          rank_to_members: {cluster_rank: [(app_name, protocol_id), ...]}
+          member_to_rank:  {(app_name, protocol_id): cluster_rank}
+        Both are empty if path is None or the file can't be read.
+    """
+    if not path:
+        return {}, {}
+    p = Path(path)
+    if not p.is_file():
+        print(f"  Warning: --protocol-clusters file not found: {p}")
+        return {}, {}
+
+    rank_to_members: dict[str, list[tuple[str, str]]] = {}
+    member_to_rank: dict[tuple[str, str], str] = {}
+    try:
+        with open(p, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rank = (row.get("cluster_rank") or "").strip()
+                app = (row.get("app_name") or "").strip()
+                pid = (row.get("protocol_id") or "").strip()
+                if not rank or not app or not pid:
+                    continue
+                key = (app, pid)
+                if key in member_to_rank:
+                    continue  # dedupe repeated rows
+                member_to_rank[key] = rank
+                rank_to_members.setdefault(rank, []).append(key)
+    except (OSError, csv.Error) as e:
+        print(f"  Warning: failed to read {p}: {e}")
+        return {}, {}
+    return rank_to_members, member_to_rank
+
+
+def find_cluster_peer_analysis(apk_name, protocol_id, rank_to_members,
+                               member_to_rank, output_dir):
+    """Look for a peer in the same cluster with a completed results.json.
+
+    Peers are other (app, protocol_id) pairs sharing the same cluster_rank.
+    A peer is considered completed if
+      <output_dir>/<peer_app>/<any_run>/analysis/<peer_pid>/output/<peer_pid>_results.json
+    exists (or the legacy nested variant under an extra <peer_pid>/ subdir).
+
+    Returns (peer_app, peer_protocol_id, results_path) or None.
+    """
+    key = (apk_name, protocol_id)
+    rank = member_to_rank.get(key)
+    if not rank:
+        return None
+    peers = [m for m in rank_to_members.get(rank, []) if m != key]
+    if not peers:
+        return None
+
+    out_root = Path(output_dir)
+    for peer_app, peer_pid in peers:
+        peer_dir = out_root / peer_app
+        if not peer_dir.is_dir():
+            continue
+        runs = sorted(
+            (d for d in peer_dir.iterdir()
+             if d.is_dir() and not d.name.startswith(".")),
+            reverse=True,
+        )
+        for run in runs:
+            base = run / "analysis" / peer_pid / "output"
+            flat = base / f"{peer_pid}_results.json"
+            if flat.exists():
+                return (peer_app, peer_pid, str(flat))
+            nested = base / peer_pid / f"{peer_pid}_results.json"
+            if nested.exists():
+                return (peer_app, peer_pid, str(nested))
+    return None
 
 
 # =============================================================================
@@ -554,22 +648,34 @@ def _locate_protocols_json(search_dir):
     return None
 
 
-def adb_install_apk(apk_path, device_env):
-    """Install an APK on the device via ADB. Warns on failure, does not raise."""
+def _run_adb_in_network(adb_cmd, device_env, apk_path=None):
+    """Run an adb command inside a container on the compose network."""
     serial = device_env.get("ADB_DEVICE_SERIAL", "")
     adb_host = device_env.get("ANDROID_ADB_SERVER_ADDRESS", "")
     adb_port = device_env.get("ANDROID_ADB_SERVER_PORT", "5037")
-    env = os.environ.copy()
+
+    docker_cmd = ["docker", "compose", "run", "--rm"]
     if adb_host:
-        env["ANDROID_ADB_SERVER_ADDRESS"] = adb_host
+        docker_cmd += ["-e", f"ANDROID_ADB_SERVER_ADDRESS={adb_host}"]
     if adb_port:
-        env["ANDROID_ADB_SERVER_PORT"] = adb_port
+        docker_cmd += ["-e", f"ANDROID_ADB_SERVER_PORT={adb_port}"]
+    if apk_path:
+        docker_cmd += ["-v", f"{Path(apk_path).absolute()}:/tmp/app.apk:ro"]
+    docker_cmd += ["agent"]
+
     cmd = ["adb"]
     if serial:
         cmd += ["-s", serial]
-    cmd += ["install", "-r", "-g", str(apk_path)]
+    cmd += adb_cmd
+
+    return subprocess.run(docker_cmd + cmd, capture_output=True, text=True)
+
+
+def adb_install_apk(apk_path, device_env):
+    """Install an APK on the device via ADB. Warns on failure, does not raise."""
+    serial = device_env.get("ADB_DEVICE_SERIAL", "")
     print(f"  Installing APK on device {serial}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    result = _run_adb_in_network(["install", "-r", "-g", "/tmp/app.apk"], device_env, apk_path=apk_path)
     if result.returncode == 0:
         print(f"  APK installed successfully")
     else:
@@ -579,19 +685,8 @@ def adb_install_apk(apk_path, device_env):
 def adb_uninstall_apk(pkg_name, device_env):
     """Uninstall an APK from the device via ADB. Warns on failure, does not raise."""
     serial = device_env.get("ADB_DEVICE_SERIAL", "")
-    adb_host = device_env.get("ANDROID_ADB_SERVER_ADDRESS", "")
-    adb_port = device_env.get("ANDROID_ADB_SERVER_PORT", "5037")
-    env = os.environ.copy()
-    if adb_host:
-        env["ANDROID_ADB_SERVER_ADDRESS"] = adb_host
-    if adb_port:
-        env["ANDROID_ADB_SERVER_PORT"] = adb_port
-    cmd = ["adb"]
-    if serial:
-        cmd += ["-s", serial]
-    cmd += ["uninstall", pkg_name]
     print(f"  Uninstalling {pkg_name} from device {serial}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    result = _run_adb_in_network(["uninstall", pkg_name], device_env)
     if result.returncode == 0:
         print(f"  APK uninstalled successfully")
     else:
@@ -820,6 +915,14 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     analysis_dir = run_dir / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load cluster map once per run, if provided
+    cluster_rank_to_members, cluster_member_to_rank = load_protocol_clusters(
+        getattr(args, "protocol_clusters", None))
+    if cluster_member_to_rank:
+        print(f"\n  Loaded {len(cluster_member_to_rank)} protocol cluster "
+              f"members across {len(cluster_rank_to_members)} clusters from "
+              f"{args.protocol_clusters}")
+
     any_success = False
     all_success = True
 
@@ -844,6 +947,31 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
             any_success = True
             continue
 
+        # Skip protocols whose cluster already has a completed analysis
+        if cluster_member_to_rank:
+            peer = find_cluster_peer_analysis(
+                args.apk_name, protocol_id,
+                cluster_rank_to_members, cluster_member_to_rank,
+                output_dir=args.output_dir,
+            )
+            if peer:
+                peer_app, peer_pid, peer_results = peer
+                rank = cluster_member_to_rank[(args.apk_name, protocol_id)]
+                print(f"\n{'#'*60}")
+                print(f"STAGE 2: Skipping {protocol_id} — cluster peer already analyzed")
+                print(f"  cluster_rank={rank}  peer={peer_app}/{peer_pid}")
+                print(f"  peer_results={peer_results}")
+                print(f"{'#'*60}")
+                pipeline_result["stage2"][protocol_id] = {
+                    "status": "cluster_skipped",
+                    "cluster_rank": rank,
+                    "peer_app": peer_app,
+                    "peer_protocol_id": peer_pid,
+                    "peer_results_path": peer_results,
+                }
+                any_success = True
+                continue
+
         print(f"\n{'#'*60}")
         print(f"STAGE 2: Analyzing protocol {idx+1}/{len(protocols)} — {protocol_id}")
         print(f"{'#'*60}")
@@ -862,9 +990,8 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
         )
 
         stage2_expected = [
-            f"{protocol_id}/{protocol_id}_results.json",
-            f"{protocol_id}/{protocol_id}-findings.md",
-            f"{protocol_id}/break.py",
+            f"{protocol_id}_results.json",
+            "break.py",
         ]
 
         stage2_dir = analysis_dir / protocol_id
@@ -965,6 +1092,12 @@ Examples:
                              "Example: apk_output/com.example.app/20260326_152357")
     parser.add_argument("--max-protocols", type=int, default=None,
                         help="Maximum number of protocols to analyze in stage 2 (default: all)")
+    parser.add_argument("--protocol-clusters", default=None,
+                        help="Path to a CSV mapping (app_name, protocol_id) -> "
+                             "cluster_rank. Before analyzing a protocol in "
+                             "stage 2, skip it if any cluster peer (same "
+                             "cluster_rank) already has a completed "
+                             "<peer_protocol_id>_results.json under --output-dir.")
     parser.add_argument("--jadx-cache-dir", default=None,
                         help="Directory with pre-decompiled jadx output per package "
                              "(e.g. jadx-cache/com.example.app/). Skips local jadx run "
@@ -978,7 +1111,9 @@ Examples:
     parser.add_argument("--max-attempts", type=int, default=1,
                         help="Number of attempts per stage (default: 1)")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"Agent timeout in seconds (default: {DEFAULT_TIMEOUT})")
+                        help=f"Per-protocol agent execution timeout in seconds "
+                             f"(default: {DEFAULT_TIMEOUT} = "
+                             f"{DEFAULT_TIMEOUT // 60} min)")
 
     # Output
     parser.add_argument("--output-dir", default="apk_output",

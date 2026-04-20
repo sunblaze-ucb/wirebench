@@ -1145,6 +1145,7 @@ Examples:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Litellm create key
+    generated_api_key = None
     if args.model_provider == "litellm":
         generated_api_key = litellm_generate_api_key(
             max_budget=10, key_alias=f"e2e-cyber-bench-{timestamp}-{uuid.uuid4().hex[:8]}"
@@ -1152,88 +1153,96 @@ Examples:
         os.environ["OPENAI_BASE_URL"] = os.getenv("LITELLM_BASE_URL")
         os.environ["OPENAI_API_KEY"] = generated_api_key
 
-    _, llm_model = get_llm_env(
-        model_provider=args.model_provider,
-        litellm_model_id=args.litellm_model_id,
-        bedrock_model_id=args.bedrock_model_id,
-        aws_region=args.aws_region,
-        aws_profile=args.aws_profile,
-    )
+    try:
+        _, llm_model = get_llm_env(
+            model_provider=args.model_provider,
+            litellm_model_id=args.litellm_model_id,
+            bedrock_model_id=args.bedrock_model_id,
+            aws_region=args.aws_region,
+            aws_profile=args.aws_profile,
+        )
 
-    print(f"Task: {args.task_path}")
-    print(f"Agent: {args.agent}")
-    print(f"Prompt style: {args.prompt_style}")
-    print(f"Mode: {args.mode}")
-    print(f"Max attempts: {args.max_attempts}")
-    print(f"Timeout: {args.timeout}s ({args.timeout//60}m)")
-    print(f"Model: {llm_model}")
-    print(f"Output: {run_dir.absolute()}")
+        print(f"Task: {args.task_path}")
+        print(f"Agent: {args.agent}")
+        print(f"Prompt style: {args.prompt_style}")
+        print(f"Mode: {args.mode}")
+        print(f"Max attempts: {args.max_attempts}")
+        print(f"Timeout: {args.timeout}s ({args.timeout//60}m)")
+        print(f"Model: {llm_model}")
+        print(f"Output: {run_dir.absolute()}")
 
-    start_time = time.time()
+        start_time = time.time()
 
-    # Load config
-    script_path = Path(args.script_dir) / args.task_path
-    config = tomli.loads((script_path / "../project.toml").read_text())
-    config.update(tomli.loads((script_path / "config.toml").read_text()))
+        # Load config
+        script_path = Path(args.script_dir) / args.task_path
+        config = tomli.loads((script_path / "../project.toml").read_text())
+        config.update(tomli.loads((script_path / "config.toml").read_text()))
 
-    data_path = Path(args.data_dir) / args.task_path
+        data_path = Path(args.data_dir) / args.task_path
 
-    # Run agent
-    final_status, all_attempts = run_agent_loop(args, config, script_path, data_path, run_dir)
+        # Run agent
+        final_status, all_attempts = run_agent_loop(args, config, script_path, data_path, run_dir)
 
-    # Save summary
-    duration = time.time() - start_time
-    summary = {
-        "task": args.task_path,
-        "agent": args.agent,
-        "prompt_style": args.prompt_style,
-        "mode": args.mode,
-        "max_attempts": args.max_attempts,
-        "timeout": args.timeout,
-        "status": final_status,
-        "attempts": all_attempts,
-        "duration_seconds": duration,
-        "duration_minutes": round(duration / 60, 2),
-        "output_dir": str(run_dir.absolute()),
-        "model": llm_model,
-    }
+        # Save summary
+        duration = time.time() - start_time
+        summary = {
+            "task": args.task_path,
+            "agent": args.agent,
+            "prompt_style": args.prompt_style,
+            "mode": args.mode,
+            "max_attempts": args.max_attempts,
+            "timeout": args.timeout,
+            "status": final_status,
+            "attempts": all_attempts,
+            "duration_seconds": duration,
+            "duration_minutes": round(duration / 60, 2),
+            "output_dir": str(run_dir.absolute()),
+            "model": llm_model,
+        }
 
-    # Litellm delete key
-    if args.model_provider == "litellm":
-        try:
-            usage = litellm_get_api_key_usage(generated_api_key)
-            print(f"Litellm API key usage: {usage}")
-            summary["litellm_api_key_usage"] = usage
-            litellm_delete_api_key(generated_api_key)
-        except Exception as e:
-            print(f"Error deleting Litellm API key: {e}")
+        # Capture usage (best-effort). Key deletion is in the finally block
+        # so it runs regardless of what happens above.
+        if generated_api_key:
+            try:
+                usage = litellm_get_api_key_usage(generated_api_key)
+                print(f"Litellm API key usage: {usage}")
+                summary["litellm_api_key_usage"] = usage
+            except Exception as e:
+                print(f"Error fetching Litellm API key usage: {e}")
 
-    with open(run_dir / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        with open(run_dir / "summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
 
-    print(f"\n{'='*60}")
-    print(f"Task: {args.task_path}")
-    print(f"Status: {final_status.upper()}")
-    print(f"Duration: {summary['duration_minutes']:.2f} minutes")
-    for att in all_attempts:
-        stages = []
-        if att.get("stage1"):
-            stages.append(f"S1:{att['stage1']}")
-        if att.get("stage2"):
-            stages.append(f"S2:{att['stage2']}")
-        if att.get("stage3"):
-            stages.append(f"S3:{att['stage3']}")
-        if att.get("stage4"):
-            stages.append(f"S4:{att['stage4']}")
-        result_str = "SUCCESS" if att.get("success") else "FAILED"
-        if att.get("agent_success") and att.get("gt_success"):
-            result_str = "FULL SUCCESS (found THE bug)"
-        elif att.get("agent_success"):
-            result_str = "PARTIAL SUCCESS (found A bug)"
-        print(f"  Attempt {att['attempt']}: {' | '.join(stages)} -> {result_str}")
-    print(f"{'='*60}")
+        print(f"\n{'='*60}")
+        print(f"Task: {args.task_path}")
+        print(f"Status: {final_status.upper()}")
+        print(f"Duration: {summary['duration_minutes']:.2f} minutes")
+        for att in all_attempts:
+            stages = []
+            if att.get("stage1"):
+                stages.append(f"S1:{att['stage1']}")
+            if att.get("stage2"):
+                stages.append(f"S2:{att['stage2']}")
+            if att.get("stage3"):
+                stages.append(f"S3:{att['stage3']}")
+            if att.get("stage4"):
+                stages.append(f"S4:{att['stage4']}")
+            result_str = "SUCCESS" if att.get("success") else "FAILED"
+            if att.get("agent_success") and att.get("gt_success"):
+                result_str = "FULL SUCCESS (found THE bug)"
+            elif att.get("agent_success"):
+                result_str = "PARTIAL SUCCESS (found A bug)"
+            print(f"  Attempt {att['attempt']}: {' | '.join(stages)} -> {result_str}")
+        print(f"{'='*60}")
 
-    sys.exit(0 if final_status == "success" else 1)
+        sys.exit(0 if final_status == "success" else 1)
+
+    finally:
+        if generated_api_key:
+            try:
+                litellm_delete_api_key(generated_api_key)
+            except Exception as e:
+                print(f"Error deleting Litellm API key: {e}")
 
 
 if __name__ == "__main__":

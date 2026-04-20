@@ -12,7 +12,6 @@ Environment variables (backward-compat with the old bash script):
     MAX_PARALLEL     Max concurrent local runs (default: DEVICE_COUNT or 1)
     AGENT            Agent backend (default: claude-code)
     MAX_ATTEMPTS     Retry attempts per stage (default: 1)
-    TIMEOUT          Per-APK timeout in seconds (default: 5400)
     MODEL_PROVIDER   LLM provider (default: litellm)
     LITELLM_STAGE_BUDGET  Per-stage budget in USD (default: 5)
     DRY_RUN          Set to 1 to print commands without executing
@@ -127,10 +126,12 @@ def parse_args():
                    default=int(os.environ.get("MAX_PARALLEL",
                                os.environ.get("DEVICE_COUNT", "1"))))
     p.add_argument("--max-protocols", type=int, default=None)
+    p.add_argument("--protocol-clusters", default=None,
+                   help="Path to clusters CSV; forwarded to run_apk_analysis.py. "
+                        "Protocols whose cluster peer already has a completed "
+                        "results.json in --output-dir are skipped.")
     p.add_argument("--max-attempts", type=int,
                    default=int(os.environ.get("MAX_ATTEMPTS", "1")))
-    p.add_argument("--timeout", type=int,
-                   default=int(os.environ.get("TIMEOUT", "5400")))
     p.add_argument("--model-provider",
                    default=os.environ.get("MODEL_PROVIDER", "litellm"))
     p.add_argument("--resume", action="store_true",
@@ -173,6 +174,8 @@ def build_run_cmd(pkg: str, args, resume_from: str | None = None) -> list[str]:
         cmd.extend(["--max-protocols", str(args.max_protocols)])
     if resume_from:
         cmd.extend(["--resume-from", resume_from])
+    if args.protocol_clusters:
+        cmd.extend(["--protocol-clusters", args.protocol_clusters])
     return cmd
 
 
@@ -212,14 +215,7 @@ async def run_local(pkg: str, args, sem: asyncio.Semaphore,
                     stdout=log_f,
                     stderr=asyncio.subprocess.STDOUT,
                 )
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=args.timeout)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-                    log_f.write(f"\n# TIMEOUT after {args.timeout}s\n")
-                    print(f"  x {pkg} TIMEOUT after {args.timeout}s (see {log_path})")
-                    return pkg, 124
+                await proc.wait()
                 rc = proc.returncode
                 log_f.write(f"\n# exit={rc}\n")
             finally:
@@ -269,14 +265,7 @@ async def run_x86_ssh(pkg: str, args, sem: asyncio.Semaphore,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            try:
-                stdout, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=args.timeout + 30)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                print(f"  x {pkg} TIMEOUT (x86) after {args.timeout}s")
-                return pkg, 124
+            stdout, _ = await proc.communicate()
             rc = proc.returncode
             if rc == 0:
                 rsync = await asyncio.create_subprocess_exec(
