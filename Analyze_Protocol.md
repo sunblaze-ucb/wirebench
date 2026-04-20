@@ -31,7 +31,6 @@ The audit should:
 - Validate findings by implementing decryption.
 - Map each confirmed finding to concrete evidence (frames, classes/methods, native functions, scripts).
 - Produce a standardized machine-readable JSON output in the format of `output_format.json`
-- Produce a Markdown report documenting findings and reasoning.
 
 ---
 
@@ -131,71 +130,14 @@ For the selected endpoint:
   - key material
   - IV or nonce
   - surrounding transformations
-- Implement `<application-name>-output/<protocol>/break.py` to decrypt ciphertexts
+- Implement `<output_dir>/break.py` to decrypt ciphertexts
 - Attempt decryption on representative ciphertexts
-- Store pre and post decryption cipher texts in `<application-name>output/<protocol>/`
+- Store pre and post decryption cipher texts in `<output_dir>/`
 
 **Outcome:** Decryption confirmed, rejected, or marked uncertain
 
-### 4. **Generate Final Report**
-- Produce a final Markdown report at `<application-name>-output\<protocol>\<protocol>-findings.md` that walks the reader through the analysis
-
-The report should read as an investigation log and must include:
-
-1. **Header**  
-   - Date, package name, app description.
-2. **Key Findings Summary**  
-   - Several bullet points summarizing final conclusions
-   - Encryption / Cryptographic Scheme Summary
-   - Should include
-    - Main crypto scheme(s)
-    - Transformation pipeline(s)
-    - Decryption status (for example, “Confirmed decryption for N of M samples”).
-3. **Session Overview**  
-   - Scope, inputs (APK, PCAPs, other artifacts), and objectives.
-4. **Network Capture Analysis**  
-   - Present the sequence of logical steps taken
-   - Notable findings, traffic composition, candidate encrypted sessions, and what these findings suggest.
-5. **Java & Smali Code Analysis**  
-   - Account of the code analysis and the logical reasoning and progression that leads to the conclusions, driven and supported by evidence.
-6. **Native Code Analysis**  
-   - Findings from relevant native code, or an explicit statement if native code was not involved in cryptographic behavior.
-7. **Encryption / Cryptographic Scheme Summary**  
-   - Summary of the overall transformation pipline(s) any relevant confirmed algorithms, modes, keys, IVs, encodings, code locations, etc. 
-8. **Decryption Implementation**  
-   - The `break.py` (and any other helper scripts), pipeline description, and execution details (including success/failure counts).
-9. **Decryption Results & Decrypted Payload Analysis**  
-   - Representative plaintexts, validation outcomes, and interpretation:
-     - What the decrypted data contains.
-     - Which identifiers and metadata are present.
-10. **Conclusion**  
-    - Concise summary of overall cryptographic soundness, impact, and any unresolved uncertainties.
-11. **Tools & Environment**  
-    - Platform details, tool versions, and artifact paths under `<application-name>-output/<protocol>/`.
-    - State overall conclusions about the application's protocol(s)
-    - Progression of findings/ chain of thought
-    - Intermediate findings 
-      - Short statement of the intermediate finding
-      - List of exact commands that directly contributeed to this finding
-      - Short reasoning for running key commands
-      - Concise evidence that directly supports the conclusion
-      - What this finding suggests for next steps (if needed)
-    - Key observations and evidence from code, traffic, and native analysis.
-    - Explains reasoning steps and hypothesis updates that led to the conclusion.
-    - Includes decryption proofs and representative plaintexts where possible.
-    - Provides final, evidence-backed conclusions about the protocol and its security.
-    - Is concise, logical, and easy to follow
-   - Ensure the report is reproducible using the noted commands and paths.
-
-The report should read like an analyst’s investigation log, integrating commands, summaries, reasoning, and conclusions in one coherent overview. It must include all major steps, key commands, findings, and the logical progression that led to the conclusions.
-
-
-All subordinate files (scripts, decrypted outputs, logs) must live under `<application-name>-output/<protocol>/` and be referenced in the report where they are used as evidence.
-
-All subordinate files must live under: `<application-name>-output/<protocol`>
-
-### 5. Generate Machine-Readable JSON 
-Generate `<application_name>_output/<protocol>/<protocol>_results.json` to be a machine readable report.
+### 4. Generate Machine-Readable JSON 
+Generate `<output_dir>/<protocol>_results.json` to be a machine readable report.
 
 Must include the following fields:
 ```

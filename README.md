@@ -125,10 +125,9 @@ apk_output/com.example.app/20260401_120000/
 ├── analysis/                                 # Stage 2
 │   └── <protocol_id>/
 │       ├── output/
-│       │   └── <protocol_id>/
-│       │       ├── <protocol_id>_results.json
-│       │       ├── <protocol_id>-findings.md
-│       │       └── break.py                  # Decryption script
+│       │   ├── <protocol_id>_results.json
+│       │   ├── break.py                      # Decryption script
+│       │   └── ...                           # cipher/plaintext samples
 │       └── trajectory/
 │           └── attempt_1.log
 └── jadx-out/                                 # Pre-decompiled APK (shared)
