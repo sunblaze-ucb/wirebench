@@ -63,7 +63,7 @@ from run_agent import (
 )
 
 # Default timeout in seconds -- for protocol analysis
-DEFAULT_TIMEOUT = 5400
+DEFAULT_TIMEOUT = 7200
 
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
