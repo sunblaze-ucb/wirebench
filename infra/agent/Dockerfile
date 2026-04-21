@@ -51,7 +51,7 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Claude Code (npm) ────────────────────────────────────────────────────────
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@2.1.114
 
 # ── Agent user ───────────────────────────────────────────────────────────────
 RUN useradd -m -s /bin/bash agent && \
