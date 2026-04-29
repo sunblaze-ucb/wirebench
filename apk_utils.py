@@ -93,11 +93,11 @@ def setup_apk_workspace(container_id, apk_path, traces, analysis_content, metada
     """Set up APK analysis workspace inside a Docker container.
 
     Creates the directory layout and copies all input files:
-        /apk/           — APK file
-        /traces/        — PCAP trace files
-        /analysis/      — Filtered JSONL analysis
-        /metadata/      — Metadata JSON
-        /output/        — Agent output directory
+        /task/{apk_filename} — APK file
+        /task/traces/        — PCAP trace files
+        /task/analysis.jsonl — Filtered JSONL analysis
+        /task/metadata.json  — Metadata JSON
+        /output/             — Agent output directory
 
     Args:
         container_id: Docker container ID
@@ -111,46 +111,55 @@ def setup_apk_workspace(container_id, apk_path, traces, analysis_content, metada
         raise FileNotFoundError(f"APK not found: {apk_path}")
     if not traces:
         raise FileNotFoundError("No trace files provided")
-    if not analysis_content:
-        raise ValueError("No analysis JSONL content for this APK")
 
     # Create directories
     exec_run(
         container_id,
-        "mkdir -p /apk /traces /analysis /metadata /output",
+        "mkdir -p /task /task/traces /output",
         workdir="/",
         verbose=False,
         check=True,
     )
 
     # Copy APK
-    copy_to_container(container_id, apk_path, f"/apk/{Path(apk_path).name}")
+    copy_to_container(container_id, apk_path, f"/task/{Path(apk_path).name}")
     print(f"  Copied APK: {Path(apk_path).name}")
 
     # Copy traces
     for trace in traces:
-        copy_to_container(container_id, trace, f"/traces/{trace.name}")
+        copy_to_container(container_id, trace, f"/task/traces/{trace.name}")
     print(f"  Copied {len(traces)} trace file(s)")
 
-    # Write filtered analysis JSONL
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp:
-        tmp.write(analysis_content)
-        tmp.flush()
-        copy_to_container(container_id, tmp.name, "/analysis/analysis.jsonl")
-    print("  Copied analysis JSONL")
+    # At least one of analysis_content or metadata must be provided — without
+    # either the agent has no information about which network requests to target.
+    if not analysis_content and not metadata:
+        raise ValueError(
+            "Neither analysis JSONL nor metadata was provided. "
+            "The agent needs at least one to know which traffic to analyze."
+        )
+
+    # Write filtered analysis JSONL (optional when metadata/ciphertexts is provided)
+    if analysis_content:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp:
+            tmp.write(analysis_content)
+            tmp.flush()
+            copy_to_container(container_id, tmp.name, "/task/analysis.jsonl")
+        print("  Copied analysis JSONL")
+    else:
+        print("  No analysis JSONL (skipped)")
 
     # Write metadata
     if metadata:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(metadata, tmp, indent=2)
             tmp.flush()
-            copy_to_container(container_id, tmp.name, "/metadata/metadata.json")
+            copy_to_container(container_id, tmp.name, "/task/metadata.json")
         print("  Copied metadata")
 
     # Make all workspace files readable by the agent user
     exec_run(
         container_id,
-        "chmod -R a+rX /apk /traces /analysis /metadata /output",
+        "chmod -R a+rX /task /output",
         verbose=False,
         check=False,
     )

@@ -575,15 +575,20 @@ chown -R agent:agent /src /output /out /work 2>/dev/null || true
             raise Exception(f"Failed to install OpenHands: {stderr[-500:]}")
 
     elif agent_id == "codex":
-        if not scripts_dir:
-            raise ValueError("scripts_dir required for codex")
-        copy_to_container(container_id, scripts_dir / "install_codex.sh", "/install_codex.sh")
-        code, _, stderr = exec_run(
-            container_id, "bash -eux /install_codex.sh",
-            "Installing Codex", timeout=1800
-        )
-        if code != 0:
-            raise Exception(f"Failed to install Codex: {stderr[-500:]}")
+        # Skip install if codex is already pre-baked in the Docker image
+        rc, _, _ = exec_run(container_id, "which codex", verbose=False, timeout=10)
+        if rc == 0:
+            print("  Codex already installed, skipping")
+        else:
+            if not scripts_dir:
+                raise ValueError("scripts_dir required for codex")
+            copy_to_container(container_id, scripts_dir / "install_codex.sh", "/install_codex.sh")
+            code, _, stderr = exec_run(
+                container_id, "bash -eux /install_codex.sh",
+                "Installing Codex", timeout=1800
+            )
+            if code != 0:
+                raise Exception(f"Failed to install Codex: {stderr[-500:]}")
 
     elif agent_id == "gemini-cli":
         if not scripts_dir:
@@ -717,31 +722,41 @@ def _execute_openhands(container_id, prompt, args):
     return code, stdout, stderr
 
 
-def _execute_codex(container_id, prompt, output_file, args):
+def _execute_codex(container_id, prompt, output_file, args, env=None):
     """Execute Codex agent and return exit code.
-    
+
     Args:
         container_id: Docker container ID (already set up with workspace)
         prompt: Prompt string for the agent
         output_file: Path to write agent output/log
         args: Command line arguments
-        
+        env: Extra environment variables (device env, etc.)
+
     Returns:
         exit_code: Agent exit code
     """
 
     # Escape prompt for shell
     escaped_prompt = shlex.quote(prompt)
-    
+
     # Get LLM environment
-    env, llm_model = get_llm_env(
+    llm_env, llm_model = get_llm_env(
         model_provider=args.model_provider,
         litellm_model_id=args.litellm_model_id,
     )
 
+    # Merge device env (ADB, Frida, etc.) with LLM env
+    merged_env = {}
+    if env:
+        merged_env.update(env)
+    merged_env.update(llm_env)
+
+    # Strip provider prefix for codex CLI (e.g. "openai/gpt-5.2-codex" -> "gpt-5.2-codex")
+    codex_model = llm_model.split("/", 1)[-1] if "/" in llm_model else llm_model
+
     # prepare auth.json
     print("Preparing Codex auth in container")
-    openai_key = env["OPENAI_API_KEY"]
+    openai_key = merged_env["OPENAI_API_KEY"]
     exec_run(
         container_id,
         f'''cat <<EOF >"$HOME/.codex/auth.json"
@@ -751,19 +766,43 @@ def _execute_codex(container_id, prompt, output_file, args):
 EOF''',
         "Creating auth.json"
     )
+    if env.get("OPENAI_BASE_URL"):
+        openai_base_url = env["OPENAI_BASE_URL"]
+        exec_run(
+            container_id,
+            f'''cat <<EOF >>"$HOME/.codex/config.toml"
+openai_base_url = "{openai_base_url}"
+web_search = "disabled"
+model_provider = "openai_http"
+
+[model_providers.openai_http]
+name = "OpenAI HTTP"
+base_url = "{openai_base_url}"
+supports_websockets = false
+EOF''',
+            "Adding OPENAI_BASE_URL to config.toml"
+        )
+    else:
+        exec_run(
+            container_id,
+            f'''cat <<EOF >>"$HOME/.codex/config.toml"
+web_search = "disabled"
+EOF''',
+            "Adding OPENAI_BASE_URL to config.toml"
+        )
 
     # Run Codex
     print("  Running Codex...")
     print(f"  Output: {output_file}")
-    
+
     code, stdout, stderr = exec_run(
         container_id,
-        f"source $HOME/.nvm/nvm.sh && codex exec --model {llm_model} --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -- {escaped_prompt}",
+        f"codex exec --model {codex_model} --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -- {escaped_prompt}",
         "Running agent",
         timeout=args.timeout,
-        env=env,
+        env=merged_env,
     )
-    
+
     # Write output to file
     with open(output_file, "w") as f:
         if stdout:
@@ -771,44 +810,58 @@ EOF''',
         if stderr:
             f.write("\n--- stderr ---\n")
             f.write(stderr)
-    
+
     return code
 
 
-def _execute_gemini_cli(container_id, prompt, output_file, args):
+def _execute_gemini_cli(container_id, prompt, output_file, args, env=None, include_dirs=None):
     """Execute Gemini CLI agent and return exit code.
-    
+
     Args:
         container_id: Docker container ID (already set up with workspace)
         prompt: Prompt string for the agent
         output_file: Path to write agent output/log
         args: Command line arguments
-        
+        env: Extra environment variables (device env, etc.)
+        include_dirs: List of paths for gemini --include-directories. Defaults
+            to the cyber-bench layout (/src,/scripts,/output). APK analysis
+            should pass ["/task", "/output"] since /scripts is not provisioned.
+
     Returns:
         exit_code: Agent exit code
     """
 
     # Escape prompt for shell
     escaped_prompt = shlex.quote(prompt)
-    
+
     # Get LLM environment
-    env, llm_model = get_llm_env(
+    llm_env, llm_model = get_llm_env(
         model_provider=args.model_provider,
         litellm_model_id=args.litellm_model_id,
     )
 
+    # Merge device env (ADB, Frida, etc.) with LLM env
+    merged_env = {}
+    if env:
+        merged_env.update(env)
+    merged_env.update(llm_env)
+
+    if include_dirs is None:
+        include_dirs = ["/src", "/scripts", "/output"]
+    include_arg = ",".join(include_dirs)
+
     # Run Gemini CLI
     print("  Running Gemini CLI...")
     print(f"  Output: {output_file}")
-    
+
     code, stdout, stderr = exec_run(
         container_id,
-        f"source $HOME/.nvm/nvm.sh && gemini -p {escaped_prompt} -y -m {llm_model} --output-format stream-json --include-directories /src,/scripts,/output",
+        f"source $HOME/.nvm/nvm.sh && gemini -p {escaped_prompt} -y -m {llm_model} --output-format stream-json --include-directories {include_arg}",
         "Running agent",
         timeout=args.timeout,
-        env=env,
+        env=merged_env,
     )
-    
+
     # Write output to file
     with open(output_file, "w") as f:
         if stdout:
@@ -816,7 +869,7 @@ def _execute_gemini_cli(container_id, prompt, output_file, args):
         if stderr:
             f.write("\n--- stderr ---\n")
             f.write(stderr)
-    
+
     return code
 
 

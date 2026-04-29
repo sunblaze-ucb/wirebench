@@ -88,22 +88,42 @@ def copy_to_container(container_id, src_path, dst_path, file_list=None):
 
 
 def start_container(env_vars=None, container_name=None, workdir=None,
-                    volumes=None):
-    """Start a Docker container via docker compose run.
+                    volumes=None, isolate=False):
+    """Start a Docker container for the agent.
 
-    Uses 'docker compose run' so the container automatically joins the
-    compose network and can resolve service names like 'cuttlefish'.
+    By default uses 'docker compose run' so the container joins the wirewatch
+    compose network and can resolve service names like 'cuttlefish' (giving
+    the agent reachability to the cuttlefish ADB / Frida ports).
+
+    When isolate=True, the container is started with plain 'docker run' on the
+    pre-built agent image (`wirewatch/agent:latest`) and joins only the default
+    bridge network — it has internet access for LLM API calls but cannot reach
+    the cuttlefish ADB or Frida ports. This is intended for static-only
+    benchmark runs where dynamic instrumentation is not allowed.
 
     Args:
         env_vars: Dict of environment variables to set in container (optional)
         container_name: Name for the container (optional)
         workdir: Working directory in container (optional)
         volumes: List of volume mounts as "host:container[:mode]" strings
+        isolate: If True, run off the wirewatch network (no ADB/Frida access).
 
     Returns:
         Container ID
     """
-    cmd = ["docker", "compose", "run", "-d", "--rm"]
+    if isolate:
+        image = os.environ.get("WIREWATCH_AGENT_IMAGE", "wirewatch/agent:latest")
+        cmd = ["docker", "run", "-d", "--rm"]
+        # Inherit LiteLLM credentials from the host env (docker-compose sets
+        # these on the agent service automatically; we have to do it manually
+        # when bypassing compose).
+        for v in ("LITELLM_BASE_URL", "LITELLM_MASTER_KEY",
+                  "LITELLM_USER_ID", "LITELLM_TEAM_ID"):
+            val = os.environ.get(v)
+            if val:
+                cmd.extend(["-e", f"{v}={val}"])
+    else:
+        cmd = ["docker", "compose", "run", "-d", "--rm"]
 
     if container_name:
         cmd.extend(["--name", container_name])
@@ -120,7 +140,10 @@ def start_container(env_vars=None, container_name=None, workdir=None,
     if workdir:
         cmd.extend(["-w", workdir])
 
-    cmd.extend(["agent", "sleep", "infinity"])
+    if isolate:
+        cmd.extend([image, "sleep", "infinity"])
+    else:
+        cmd.extend(["agent", "sleep", "infinity"])
 
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return result.stdout.strip()

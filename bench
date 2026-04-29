@@ -17,6 +17,7 @@ Commands:
   up         Boot the cuttlefish stack
   run        Run the pipeline on a single APK
   batch      Run the pipeline on a task list
+  benchmark  Run the benchmark suite (curated tasks with ground truth)
   validate   Run tooling sanity checks inside agent container
   reset      Soft- or hard-reset device state
   down       Tear down the stack
@@ -40,6 +41,7 @@ case "$cmd" in
   down)      source "$REPO_ROOT/infra/bench/down.sh";      bench_down "$@" ;;
   shell)     source "$REPO_ROOT/infra/bench/shell.sh";     bench_shell "$@" ;;
   logs)      source "$REPO_ROOT/infra/bench/logs.sh";      bench_logs "$@" ;;
+  benchmark) source "$REPO_ROOT/infra/bench/benchmark.sh"; bench_benchmark "$@" ;;
   setup-x86) source "$REPO_ROOT/infra/bench/setup-x86.sh"; bench_setup_x86 "$@" ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown command: $cmd" >&2; usage; exit 1 ;;

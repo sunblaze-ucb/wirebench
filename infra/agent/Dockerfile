@@ -42,6 +42,9 @@ RUN git clone --depth 1 --branch 5.9.8 --recurse-submodules \
     ./configure --prefix=$(r2 -H R2_PREFIX) && \
     make -j$(nproc) && make install
 
+# ── uv (Python package manager) ─────────────────────────────────────────────
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 # ── Python packages ──────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir pycryptodome r2pipe lief pyelftools tomli boto3 frida-tools==12.5.0
 
@@ -53,13 +56,16 @@ RUN apt-get update -qq && \
 # ── Claude Code (npm) ────────────────────────────────────────────────────────
 RUN npm install -g @anthropic-ai/claude-code@2.1.114
 
+# ── Codex CLI (npm) ─────────────────────────────────────────────────────────
+RUN npm install -g @openai/codex@0.118.0 && mkdir -p /root/.codex
+
 # ── Agent user ───────────────────────────────────────────────────────────────
 RUN useradd -m -s /bin/bash agent && \
     echo 'agent ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && \
     usermod -aG wireshark agent 2>/dev/null || true
 
 # ── Workspace directories ───────────────────────────────────────────────────
-RUN mkdir -p /apk /traces /analysis /metadata /output /src /work /out && \
-    chown -R agent:agent /apk /traces /analysis /metadata /output /src /work /out
+RUN mkdir -p /task /analysis /output /src /work /out && \
+    chown -R agent:agent /task /analysis /output /src /work /out
 
 CMD ["tail", "-f", "/dev/null"]

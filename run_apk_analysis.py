@@ -63,7 +63,7 @@ from run_agent import (
 )
 
 # Default timeout in seconds -- for protocol analysis
-DEFAULT_TIMEOUT = 7200
+DEFAULT_TIMEOUT = 10800
 
 
 SCRIPTS_DIR = Path(__file__).parent.absolute()
@@ -100,15 +100,19 @@ def build_device_env(arch: str, device_index: int, adb_host: str) -> dict:
 # Prompt builders
 # =============================================================================
 
-def format_prompt(template, apk_name, apk_path, traces_dir, analysis_path, metadata_path, output_dir):
+def format_prompt(template, apk_name, apk_path, traces_dir, analysis_path,
+                  metadata_path, output_dir, apk_filename=None):
     """Substitute template variables in the prompt string.
 
-    Available variables: {apk_name}, {apk_path}, {traces_dir},
-    {analysis_path}, {metadata_path}, {output_dir}
+    Available variables: {apk_name}, {apk_path}, {apk_filename},
+    {traces_dir}, {analysis_path}, {metadata_path}, {output_dir}
     """
+    if apk_filename is None:
+        apk_filename = apk_path.rsplit("/", 1)[-1] if "/" in apk_path else apk_path
     return template.format(
         apk_name=apk_name,
         apk_path=apk_path,
+        apk_filename=apk_filename,
         traces_dir=traces_dir,
         analysis_path=analysis_path,
         metadata_path=metadata_path,
@@ -524,13 +528,15 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
                 container_name=container_name,
                 workdir="/output",
                 volumes=vols,
+                isolate=getattr(args, "static", False),
             )
             print(f"  Container: {container_id[:12]}")
 
             # Base packages and RE toolchain are pre-baked in the Docker image
 
-            # Set up APK workspace
-            setup_apk_workspace(container_id, apk_path, traces, analysis_content, metadata)
+            # Set up APK workspace (skipped when --task-dir is used; files are bind-mounted)
+            if not getattr(args, 'task_dir', None):
+                setup_apk_workspace(container_id, apk_path, traces, analysis_content, metadata)
 
             # Copy extra files into container (e.g., stage 1 outputs for stage 2)
             if extra_container_files:
@@ -557,9 +563,12 @@ def run_stage(args, apk_path, traces, analysis_content, metadata, prompt,
             if args.agent == "claude-code":
                 exit_code = _execute_claude_code(container_id, full_prompt, str(log_file), args, workdir="/output", env=env_vars)
             elif args.agent == "codex":
-                exit_code = _execute_codex(container_id, full_prompt, str(log_file), args)
+                exit_code = _execute_codex(container_id, full_prompt, str(log_file), args, env=env_vars)
             elif args.agent == "gemini-cli":
-                exit_code = _execute_gemini_cli(container_id, full_prompt, str(log_file), args)
+                exit_code = _execute_gemini_cli(
+                    container_id, full_prompt, str(log_file), args,
+                    env=env_vars, include_dirs=["/task", "/output"],
+                )
             else:  # openhands
                 exit_code, stdout, stderr = _execute_openhands(container_id, full_prompt, args)
                 subprocess.run(
@@ -736,7 +745,7 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
     """
     # Resolve container paths
     apk_filename = Path(apk_path).name if apk_path else "N/A"
-    container_apk_path = f"/apk/{apk_filename}" if apk_path else "/apk/"
+    container_apk_path = f"/task/{apk_filename}" if apk_path else "/task/"
 
     # Per-run device assignment.
     # Cross-architecture cuttlefish on a single host is impossible (KVM has
@@ -750,16 +759,23 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
         detected_arch = "universal"
     if detected_arch == "x86_64":
         print(f"  Note: APK is x86_64-only — relying on libndk_translation to run x86 native libs on the arm64 device")
-    arch = "arm64"
-    device_index = 0
-    adb_host = "cuttlefish"
-    args.device_env = build_device_env(arch, device_index, adb_host)
 
-    if apk_path:
-        adb_install_apk(apk_path, args.device_env)
+    # Static mode: no device assignment, no ADB install/uninstall.
+    static_mode = getattr(args, "static", False)
+    if static_mode:
+        print("  Static mode: skipping device assignment and APK install (no ADB/Frida access)")
+        args.device_env = {}
+    else:
+        arch = "arm64"
+        device_index = int(os.environ.get("WIREWATCH_FORCED_DEVICE_INDEX", "0"))
+        adb_host = "cuttlefish"
+        args.device_env = build_device_env(arch, device_index, adb_host)
+
+        if apk_path:
+            adb_install_apk(apk_path, args.device_env)
 
     def _cleanup():
-        if apk_path:
+        if not static_mode and apk_path:
             adb_uninstall_apk(args.apk_name, args.device_env)
 
     pipeline_result = {
@@ -834,8 +850,8 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
         stage1_prompt = build_stage1_prompt(
             apk_name=args.apk_name,
             apk_path=container_apk_path,
-            traces_dir="/traces",
-            analysis_path="/analysis/analysis.jsonl",
+            traces_dir="/task/traces",
+            analysis_path="/task/analysis.jsonl",
             output_dir="/output",
         )
 
@@ -981,8 +997,8 @@ def run_pipeline(args, apk_path, traces, analysis_content, metadata, run_dir):
         stage2_prompt = build_stage2_prompt(
             apk_name=args.apk_name,
             apk_path=container_apk_path,
-            traces_dir="/traces",
-            analysis_path="/analysis/analysis.jsonl",
+            traces_dir="/task/traces",
+            analysis_path="/task/analysis.jsonl",
             protocol_id_dir="/protocol_identification",
             protocol_json=protocol_json_str,
             protocol_id=protocol_id,
@@ -1068,6 +1084,9 @@ Examples:
                         help="Directory containing APK files")
     parser.add_argument("--analysis-jsonl", default="./analysis.jsonl",
                         help="Pre-computed analysis JSONL file")
+    parser.add_argument("--task-dir", default=None,
+                        help="Pre-assembled task directory to mount at /task/. "
+                             "Skips setup_apk_workspace() (files already present).")
 
     # Prompt (single-stage mode)
     parser.add_argument("--prompt", default=None,
@@ -1107,6 +1126,14 @@ Examples:
     parser.add_argument("--agent", choices=["claude-code", "openhands", "codex", "gemini-cli"],
                         default="claude-code", help="Agent backend (default: claude-code)")
 
+    # Static-only mode
+    parser.add_argument("--static", action="store_true",
+                        help="Static analysis only: no Android device, no ADB/Frida. "
+                             "The agent container is started off the wirewatch network "
+                             "so the cuttlefish ADB/Frida ports are unreachable, and no "
+                             "device env vars are set. Pair with a prompt that omits "
+                             "dynamic-analysis instructions (e.g. benchmark_protocol_static.md).")
+
     # Execution
     parser.add_argument("--max-attempts", type=int, default=1,
                         help="Number of attempts per stage (default: 1)")
@@ -1122,8 +1149,8 @@ Examples:
     # LLM configuration
     parser.add_argument("--model-provider", choices=["litellm", "bedrock"], default="litellm",
                         help="LLM provider (default: litellm)")
-    parser.add_argument("--litellm-model-id", choices=["openai/gpt-5.2-codex",
-    "vertex_ai/claude-sonnet-4-6"], default="vertex_ai/claude-sonnet-4-6")
+    parser.add_argument("--litellm-model-id", default="oai/gpt-5.4",
+                        help="LiteLLM model ID (e.g. vertex_ai/claude-sonnet-4-6, oai/gpt-5.4)")
     parser.add_argument("--bedrock-model-id", default="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
     parser.add_argument("--aws-region", default="us-west-2")
     parser.add_argument("--aws-profile", default="bedrock-profile1")
@@ -1164,10 +1191,19 @@ Examples:
     if args.metadata:
         if os.path.isfile(args.metadata):
             with open(args.metadata) as f:
-                metadata.update(json.load(f))
+                data = json.load(f)
+            if isinstance(data, dict):
+                metadata.update(data)
+            else:
+                # Non-dict (e.g. array from ciphertexts.json) — use as-is
+                metadata = data
         else:
             try:
-                metadata.update(json.loads(args.metadata))
+                data = json.loads(args.metadata)
+                if isinstance(data, dict):
+                    metadata.update(data)
+                else:
+                    metadata = data
             except json.JSONDecodeError:
                 print(f"Warning: Could not parse --metadata as JSON: {args.metadata}")
 
@@ -1228,19 +1264,40 @@ Examples:
 
     if single_stage:
         # --- Single-stage mode (backwards compatible) ---
+        # Ensure device_env is set (pipeline mode sets it in run_pipeline(),
+        # but single-stage skips that path). In static mode, no device is
+        # available and no env vars are set.
+        if getattr(args, "static", False):
+            print("Static mode: skipping device assignment (no ADB/Frida access)")
+            args.device_env = {}
+        elif not getattr(args, "device_env", None):
+            device_index = int(os.environ.get("WIREWATCH_FORCED_DEVICE_INDEX", "0"))
+            args.device_env = build_device_env("arm64", device_index, "cuttlefish")
+
         apk_filename = Path(apk_path).name if apk_path else "N/A"
-        container_apk_path = f"/apk/{apk_filename}" if apk_path else "/apk/"
+        container_apk_path = f"/task/{apk_filename}" if apk_path else "/task/"
 
         formatted_prompt = format_prompt(
             prompt_template,
             apk_name=args.apk_name,
             apk_path=container_apk_path,
-            traces_dir="/traces",
-            analysis_path="/analysis/analysis.jsonl",
-            metadata_path="/metadata/metadata.json",
+            traces_dir="/task/traces",
+            analysis_path="/task/analysis.jsonl",
+            metadata_path="/task/metadata.json",
             output_dir="/output",
         )
         expected_outputs = [f.strip() for f in args.expected_outputs.split(",") if f.strip()]
+
+        # Look up pre-decompiled jadx output for single-stage mode
+        single_stage_volumes = []
+        if args.task_dir:
+            single_stage_volumes.append(f"{Path(args.task_dir).absolute()}:/task:ro")
+        if apk_path and args.jadx_cache_dir:
+            jadx_dir = pre_decompile_apk(apk_path, args.jadx_cache_dir)
+            if jadx_dir:
+                single_stage_volumes.append(f"{Path(jadx_dir).absolute()}:/jadx-out:ro")
+            else:
+                print("  Continuing without jadx output")
 
         final_status, all_attempts = run_stage(
             args, apk_path, traces, analysis_content, metadata,
@@ -1248,6 +1305,7 @@ Examples:
             stage_dir=run_dir,
             expected_outputs=expected_outputs,
             stage_label="single-stage",
+            extra_volumes=single_stage_volumes or None,
         )
 
         # Save summary

@@ -57,7 +57,7 @@ For the selected endpoint, reconstruct the full cryptographic and transformation
 ### 1. Review Existing Evidence (Do NOT Re-Analyze Traffic)
 Stage 1 has already completed traffic analysis. **Do not spend time re-parsing PCAPs or extracting payloads from scratch.** Instead:
 - Read the protocol identification report and JSON from `/protocol_identification/`
-- Read the pre-computed analysis from `/analysis/analysis.jsonl`
+- Read the pre-computed analysis from `/task/analysis.jsonl`
 - Note the representative ciphertext samples, endpoint signatures, and payload characteristics already documented
 - Only use `tshark` if you need a specific raw byte extract not available in the existing analysis
 
